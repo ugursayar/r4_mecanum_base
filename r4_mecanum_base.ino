@@ -604,18 +604,35 @@ void pollWifiFrames() {
 BLEDevice         blePeripheral;
 BLECharacteristic bleTxChar;
 bool              bleReady = false;
+// Did BLE.begin() actually succeed for the window we are in? A failed begin() leaves the
+// stack un-started, so scanning it yields nothing and end()-ing it tears down something
+// that was never built. Without this the receiver burns a full SEARCH_SHORT_MS window
+// staring at a dead radio on every cycle — time it should be spending listening on Wi-Fi,
+// which still works. loop() reads it to bail out of the BLE window immediately.
+bool              bleBegun = false;
 
 void enterBle() {
   Serial.println("[ble] starting BLE, scanning for \"NESSO\" ...");
-  if (!BLE.begin()) { Serial.println("[ble] BLE.begin() failed (firmware/library?)"); return; }
+  bleBegun = BLE.begin();
+  if (!bleBegun) {
+    // Not necessarily fatal or permanent: the ESP32-S3 survives an RA4M1 reset, so a
+    // reflash can leave the modem in whatever state the PREVIOUS firmware left it, and a
+    // Wi-Fi/BLE hand-off can land on it mid-transition. Retried on the next BLE window,
+    // which the bail-out in loop() rate-limits to one attempt per Wi-Fi dwell. A full
+    // power cycle (not just the reset button) is what clears a wedged modem.
+    Serial.println("[ble] BLE.begin() failed - staying on Wi-Fi, will retry next window");
+    return;
+  }
   BLE.scanForUuid(BLE_SVC_UUID);
 }
 
 void exitBle() {
+  if (!bleBegun) return;                  // nothing was ever started; end() would be a lie
   BLE.stopScan();
   if (blePeripheral && blePeripheral.connected()) blePeripheral.disconnect();
   bleReady = false;
   BLE.end();
+  bleBegun = false;
 }
 
 // While in SEARCH_BLE: find the peripheral, connect, subscribe to TX notifications.
@@ -653,12 +670,14 @@ void pollBleConnected() {
   }
 }
 bool bleReadyDbg() { return bleReady; }
+bool bleBegunDbg() { return bleBegun; }
 #else
 void enterBle() {}
 void exitBle()  {}
 void pollBleSearch()    {}
 void pollBleConnected() {}
 bool bleReadyDbg() { return false; }
+bool bleBegunDbg() { return false; }
 #endif
 
 // ── Link state machine ────────────────────────────────────────────────────────
@@ -908,7 +927,7 @@ void setup() {
     Serial.println("WiFi/BLE module not found!");
     while (true) { drawNoSignal(); delay(1000); }
   }
-  Serial.println("=== r4_mecanum_base — Nesso dual-link mecanum rover ===");
+  Serial.println("=== r4_mecanum_base - Nesso dual-link mecanum rover ===");
   Serial.println("Searching for a remote over Wi-Fi (UDP/TCP) and BLE, alternating");
   Serial.println("(the R4's radio can't do both at once). First valid frame wins.");
 
@@ -922,8 +941,6 @@ void setup() {
 }
 
 void loop() {
-  uint32_t now = millis();
-
   // 1) Service the radio every pass. No delay() anywhere in here: the N1 transmits at
   //    ~10 Hz and a blocking wait long enough to matter drops datagrams and starves BLE.
   switch (linkState) {
@@ -933,6 +950,20 @@ void loop() {
     case PAIRED_WIFI: pollWifiFrames();  break;
     case PAIRED_BLE:  pollBleConnected(); break;
   }
+
+  // SAMPLE THE CLOCK *AFTER* THE POLL — never before it. acceptFrame() runs inside the
+  // poll above and stamps `lastFrameMs = millis()`, so a `now` taken before it can be
+  // EARLIER than lastFrameMs. These are uint32_t, so `now - lastFrameMs` then underflows
+  // to ~4.29e9 — which reads as "no frame for 49 days" and trips the UNPAIR_MS branch
+  // below on the very frame that just paired the link.
+  //
+  // Observed on hardware 2026-08-06 before this was moved: the R4 pair/unpaired at the
+  // N1's own 10 Hz frame rate (436 cycles in 45 s), never staying paired long enough to
+  // drive. It looked like a flaky BLE link and was not one — and it survived because
+  // SEARCH_BLE <-> PAIRED_BLE does not cross the Wi-Fi/BLE domain, so gotoState() never
+  // tore the radio down and the next frame simply re-paired. The same underflow reaches
+  // stateEnteredMs (set by acceptFrame too), which is why one timestamp covers both.
+  uint32_t now = millis();
 
   bool paired    = isPaired();
   bool linkFresh = paired && haveFrame && (now - lastFrameMs) < FAILSAFE_MS;
@@ -962,7 +993,13 @@ void loop() {
     heartbeat();
     if (driveMode != MODE_WHEELTEST) drawSearch(linkState == SEARCH_BLE);
 #if ENABLE_BLE
-    if (now - stateEnteredMs > searchWindowMs())
+    // Bail out of a BLE window whose BLE.begin() failed instead of sitting out its full
+    // dwell: there is no stack to scan, and Wi-Fi — which still works — is where a remote
+    // could actually be heard. Going back through gotoState() re-enters Wi-Fi properly and
+    // leaves the next BLE window to retry, so a transient failure costs one hand-off
+    // rather than every other search window.
+    if (linkState == SEARCH_BLE && !bleBegunDbg()) gotoState(SEARCH_WIFI);
+    else if (now - stateEnteredMs > searchWindowMs())
       gotoState(linkState == SEARCH_WIFI ? SEARCH_BLE : SEARCH_WIFI);
 #else
     // Wi-Fi-only: if the connect failed (no IP), keep retrying until it lands — there is

@@ -7,9 +7,12 @@ Wi-Fi (UDP + TCP) and Bluetooth LE** and auto-pairing with whichever remote spea
 The drive logic is a port of [`quali_base`](../quali_base) — the same chassis running on
 an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
 
-> **Not yet run on hardware.** Everything below is verified by compilation and by reading
-> against quali_base; no motion, pairing or matrix behaviour has been confirmed on the
-> bench. The `inv` flags and `VX_SIGN` are a starting guess — see **Bring-up**.
+> **Link verified on hardware 2026-08-06; drive output verified only as numbers.** BLE
+> pairing with a Nesso N1, sustained link, frame decode and the mix for forward/reverse/
+> rotate were all confirmed over serial. **No motor has turned yet** — strafe, the mode
+> gestures, the throttle lock and `MODE_WHEELTEST` are still unexercised, and the `inv`
+> flags and `VX_SIGN` remain a starting guess. See **Bring-up** before applying power to
+> the L298Ns.
 
 Engineering notes and traps are in [CLAUDE.md](CLAUDE.md).
 

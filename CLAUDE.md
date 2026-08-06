@@ -203,6 +203,72 @@ clears it first, which is what structurally prevents it surviving a mode change.
 
 ---
 
+## Hardware notes (bench, 2026-08-06)
+
+### Sample `millis()` AFTER the transport poll, never before it
+
+`loop()` must not hoist `uint32_t now = millis()` above the poll switch. `acceptFrame()`
+runs inside the poll and stamps `lastFrameMs = millis()`, so a `now` taken earlier can be
+*less* than `lastFrameMs`; these are `uint32_t`, so `now - lastFrameMs` underflows to
+~4.29e9, which reads as "no frame for 49 days" and trips the `UNPAIR_MS` branch **on the
+very frame that just paired the link**.
+
+Observed as the R4 pair/unpairing at the N1's own 10 Hz frame rate — **436 cycles in 45 s**,
+never staying paired long enough to drive. It presented as a flaky BLE link and was nothing
+of the kind. It persisted because `SEARCH_BLE ↔ PAIRED_BLE` does not cross the Wi-Fi/BLE
+domain, so `gotoState()` never tore the radio down and the next frame simply re-paired. The
+same underflow reaches `stateEnteredMs`, which `acceptFrame()` also stamps — one correctly
+placed timestamp covers both. Upstream `Nesso_R4_Receiver` does not have this bug; it calls
+`millis()` fresh at the point of use, and the hazard was introduced here by restructuring
+`loop()` around the drive tick.
+
+### The ESP32-S3 modem survives an RA4M1 reset — power-cycle to clear it
+
+Reflashing the sketch, or pressing the reset button, restarts **only the main MCU**. The
+modem keeps whatever state the *previous* firmware left it in. After the pair/unpair storm
+above (which left the modem thrashing a BLE connection at 10 Hz), `BLE.begin()` failed on
+every subsequent boot — including boots of corrected firmware. **Unplugging USB and
+replugging cleared it immediately**, and BLE has worked since.
+
+So: `BLE.begin() failed` is not automatically an out-of-date modem firmware. Check a full
+power cycle *before* reaching for the firmware updater. `enterBle()` records success in
+`bleBegun`, and `loop()` bails out of a BLE window whose `begin()` failed rather than
+burning a full `SEARCH_SHORT_MS` dwell on a stack that was never started — a receiver that
+cannot do BLE should spend its time on Wi-Fi, which still works.
+
+Modem firmware here is **0.6.0**, which is exactly `WIFI_FIRMWARE_LATEST_VERSION` for core
+`renesas_uno` 1.6.0. There is nothing to update to; don't flash it speculatively.
+`arduino-cli` 1.5.1 has no `firmware` command anyway — it moved to the separate
+`arduino-fwuploader`, which is not installed.
+
+### Reading serial from the R4 needs DTR asserted
+
+The R4's Serial is USB CDC. A serial client that opens the port without asserting **DTR**
+receives nothing at all and looks exactly like a dead board. From PowerShell:
+
+```powershell
+$p = New-Object System.IO.Ports.SerialPort COM5,115200,None,8,one
+$p.DtrEnable = $true; $p.RtsEnable = $true; $p.ReadTimeout = 1000
+```
+
+Asserting DTR also **resets the board**, so the boot banner is only captured if the client
+is already attached. Keep all `Serial.print` strings **pure ASCII** — em-dashes go out as
+multi-byte UTF-8 and render as `???` in clients that read the stream as ASCII.
+
+### What the bench has and has not confirmed
+
+Confirmed: BLE scan → connect → subscribe → pair, sustained (20 s, no unpair); frame decode;
+the tank→(throttle, turn) unmix; the mecanum mix for forward, reverse and rotate; the slew
+limiter stepping in `SLEW_STEP` units; the aux flag arriving set (**a Mini JoyC is fitted**,
+exactly the case the docs warn about) and its axes resting at exactly 0, as NessoLink 1.1.2
+requires.
+
+Not confirmed: any motor turning, strafe (the `{+,-,-,+}` wheel pattern never appeared —
+the aux stick was not moved), the mode gestures, the throttle lock, `MODE_WHEELTEST`, and
+the whole Wi-Fi UDP/TCP frame path.
+
+---
+
 ## Working on this repo
 
 - `arduino_secrets.h` is **gitignored**; `arduino_secrets.h.example` is the tracked template.
