@@ -340,9 +340,18 @@ limiter stepping in `SLEW_STEP` units; the aux flag arriving set (**a Mini JoyC 
 exactly the case the docs warn about) and its axes resting at exactly 0, as NessoLink 1.1.2
 requires.
 
-Not confirmed: any motor turning, strafe (the `{+,-,-,+}` wheel pattern never appeared —
-the aux stick was not moved), the mode gestures, the throttle lock, `MODE_WHEELTEST`, and
-the whole Wi-Fi UDP/TCP frame path.
+Since confirmed: all four motors, the wheel-test corner mapping, the `inv` directions and
+`VX_SIGN` (see the calibration note above).
+
+Not confirmed: the mode gestures, the throttle lock, the aux-stick strafe path, the whole
+Wi-Fi UDP/TCP frame path, and the battery gauge under a real pack.
+
+**`[batt] no sensor` on USB is expected, not a fault** — the UPS is switched off whenever
+USB is connected, so the INA219 is unpowered. `pollBattery()` re-probes every
+`BATT_RETRY_MS` (5 s) precisely so the module can be absent at boot and join later, which
+means a UPS-powered run needs no reset to bring the gauge up. Don't chase it as a wiring
+fault on a bench run; check it on pack power, where the matrix gauge row is the readout
+since there is no serial.
 
 ---
 

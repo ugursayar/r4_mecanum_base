@@ -12,8 +12,9 @@ an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
 > established. BLE pairing, sustained link, frame decode and the mix for forward, reverse,
 > rotate and strafe are confirmed.
 >
-> Outstanding: the INA219 has not yet answered on A4/A5 (`[batt] no sensor`), so the
-> battery gauge row stays dark.
+> `[batt] no sensor` on a USB-powered run is **expected, not a fault**: the UPS is switched
+> off while USB is connected, so the INA219 is unpowered. It is re-probed every 5 s and
+> joins on its own once the pack is on.
 
 Engineering notes and traps are in [CLAUDE.md](CLAUDE.md).
 
@@ -252,7 +253,10 @@ look alike.
 
 ## Battery — UPS_3S pack monitor (indicator only)
 
-An INA219 at **0x41 on A4/A5** watches a 3S 18650 pack. Thresholds are on the *pack*
+An INA219 at **0x41 on A4/A5** watches a 3S 18650 pack. The module is **re-probed every
+5 s while absent**, so it can be powered up after the sketch has started — or be off
+entirely, as it is on a USB-powered bench run — and will come online by itself, logging
+`[batt] INA219 @ 0x41 online`. An empty gauge row on USB is therefore normal. Thresholds are on the *pack*
 voltage (bus + shunt drop) smoothed by an EMA with tau ≈ 20 s, because the motors draw from
 the same pack and a stall sags the rail well below the true state of charge — so a brief sag
 can never trip the display while a real decline still shows within ~30 s.
