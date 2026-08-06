@@ -11,8 +11,9 @@ an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
 > pairing with a Nesso N1, sustained link, frame decode and the mix for forward/reverse/
 > rotate were all confirmed over serial. **No motor has turned yet** — strafe, the mode
 > gestures, the throttle lock and `MODE_WHEELTEST` are still unexercised, and the `inv`
-> flags and `VX_SIGN` remain a starting guess. See **Bring-up** before applying power to
-> the L298Ns.
+> flags and `VX_SIGN` remain a starting guess. The INA219 pack monitor is wired in but has
+> not yet seen a sensor (`[batt] no sensor`). See **Bring-up** before applying power to the
+> L298Ns.
 
 Engineering notes and traps are in [CLAUDE.md](CLAUDE.md).
 
@@ -42,8 +43,8 @@ What changed, and why:
 | **Transport** | Router Bridge from a Linux MPU that owned the radio | the sketch owns the link: Wi-Fi UDP/TCP + BLE, alternating search, sticky pairing |
 | **Vision / `MODE_AUTO`** | camera object-chase on the MPU, gated by a host ARM toggle | **removed** — no camera, no host |
 | **Double-click gesture** | selects `MODE_AUTO` | **removed** with it, and with it the 500 ms lag every mode change paid waiting to see if a partner click was coming |
-| **Battery (INA219)** | polled and displayed, indicator-only | **not ported** — it takes no action, so it is not drive logic. A4/A5 are left free for it |
-| **Matrix** | 13x8 read in portrait, so every draw was rotated | 12x8 landscape, drawn directly |
+| **Battery (INA219)** | polled and displayed, indicator-only | **ported**, on A4/A5 instead of D20/D21; still indicator-only |
+| **Matrix** | 13x8 read in portrait, logical 8x13 frame | 12x8 read in portrait, logical 8x12 frame — same 90 deg CW `px()` mapping |
 | **Loop timing** | `delay(60)` — frames arrived on a separate Bridge thread | 60 ms *tick*, no blocking delay: the radio is polled every pass or datagrams drop |
 
 ## Full holonomy from a two-stick N1
@@ -108,8 +109,8 @@ Two L298N modules, one per axle, so the high-current leads stay short.
 `analogWrite()` is only real PWM on **D3 D5 D6 D9 D10 D11** on this board — on any other
 pin the core degrades it to a 0/1 digital write, so the four EN pins must come from that
 set. D0/D1 (Serial1), D13 (built-in LED) and **A4/A5 (I2C)** are deliberately left alone;
-A4/A5 in particular stay free so quali_base's INA219 pack monitor can be added later
-without moving a motor pin. D10/D11 stay free for SPI.
+**A4/A5 carry the UPS_3S INA219** (address 0x41) and must stay off the motor map.
+D10/D11 stay free for SPI.
 
 ## Bring-up — in this order
 
@@ -142,7 +143,7 @@ mid-drive means the rover moves off with the sticks centred.
 Matrix cues: sweeping bar = searching (top-left block = Wi-Fi phase, top-right = BLE);
 plus-shaped dot = the virtual stick, with `col 0` lit for a Wi-Fi link / `col 1` for BLE
 and 1–3 mode dots on the right edge; full **X** = paired but no signal; 3x3 block =
-wheel test. **A locked throttle drops the dot's vertical arms and leaves a horizontal
+wheel test; blinking battery outline = critically low pack. **A locked throttle drops the dot's vertical arms and leaves a horizontal
 bar** — the indicator describes itself, the arms it drops being the axis it gave up, and
 it cannot be confused with "throttle merely centred" (a plus on the centre row).
 
@@ -190,3 +191,54 @@ Requires **NessoLink ≥ 1.1.2** (codec only — its Wi-Fi transport classes are
 so this sketch decodes packets off the Renesas MCU's own stack) and, for BLE,
 `ArduinoBLE` plus an up-to-date ESP32-S3 modem firmware on the R4. 1.1.2 matters for the
 aux axis contract above; the wire format is unchanged from 1.1.1.
+
+## LED matrix layout
+
+The panel is physically 12x8, but the board is read **turned**: every draw routine works in
+a **logical 8 wide x 12 tall portrait frame** and `px()` applies a **90° CW** rotation on
+the way out. Logical (0,0) is the viewer's top-left, +x right, +y down.
+
+```
+   x 0 1 2 3 4 5 6 7
+ y 0 L b . . . m m m     row 0  — STATUS: link (x0 = Wi-Fi, x1 = BLE), mode dots from the right
+   1 . . . . . . . .              (1 = DRIVE, 2 = STRAFE, 3 = WHEELTEST)
+   2 . . . # . . . .
+   3 . . # # # . . .     rows 2..9 — the stick dot. Up = forward, right = right.
+   4 . . . # . . . .              Locked throttle drops the vertical arms -> a bare bar.
+   .
+   9 . . . . . . . .
+  10 . . . . . . . .
+  11 # # # # # . . w     row 11 — BATTERY gauge (1..8 px), low-battery blink at x7
+```
+
+`MATRIX_ROTATE_CW` is the single constant encoding how the board is mounted. **If the whole
+display comes out inverted, flip that** — never an individual draw routine, since they are
+all correct relative to one another in logical coordinates.
+
+An **empty bottom row means "no INA219"**, never "flat pack": the gauge always lights at
+least one pixel while the sensor answers. Those are opposite states — a missing sensor
+deliberately disables battery management and leaves the rover driving — so they must not
+look alike.
+
+## Battery — UPS_3S pack monitor (indicator only)
+
+An INA219 at **0x41 on A4/A5** watches a 3S 18650 pack. Thresholds are on the *pack*
+voltage (bus + shunt drop) smoothed by an EMA with tau ≈ 20 s, because the motors draw from
+the same pack and a stall sags the rail well below the true state of charge — so a brief sag
+can never trip the display while a real decline still shows within ~30 s.
+
+| | | |
+|---|---|---|
+| `V_MAX` / `V_MIN` | 12.6 V / 9.0 V | 4.2 / 3.0 V per cell = 100% / 0% |
+| `V_WARN` | 9.6 V (~17%) | advisory: blinking pixel at the end of the gauge row |
+| `V_CRIT` | 9.3 V (~8%) | latched: full-panel blinking battery outline |
+| `V_RELEASE` | 10.5 V | the critical latch clears only once clearly recharged |
+
+**It takes no action.** It never cuts the motors and never shuts anything down, so the
+pack's own BMS is the only automatic protection — a flat pack under load will be dragged to
+BMS cutoff if the operator ignores the panel. This matches quali_base, which deliberately
+made the pack indicator-only.
+
+Its failsafe points the **opposite way to the link's**, on purpose: an absent or failed
+INA219 reports "no sensor" and leaves the rover driving, because losing a *sensor* must not
+immobilise it — whereas losing contact with the *operator* must never leave it driving.

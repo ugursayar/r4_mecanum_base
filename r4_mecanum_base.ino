@@ -18,11 +18,12 @@
  *     2026-08-06): a second stick drives whichever everyday mode is NOT selected, so the
  *     two sticks span all three DOFs at once, and a long press locks the throttle axis
  *     instead of selecting a MODE_ROTATE that no longer exists.
- *   * NO BATTERY MONITOR. quali_base polls an INA219 on the UPS_3S pack. That is
- *     indicator-only there (it takes no action), so it is not drive logic and is not
- *     ported. A4/A5 are left free so it can be added later.
- *   * MATRIX. 12x8 landscape here vs the Uno Q's 13x8 read in portrait, so the
- *     indicator is redrawn for this panel rather than rotated.
+ *   * BATTERY. The UPS_3S INA219 pack monitor IS ported (on A4/A5 here, D20/D21 there)
+ *     and is INDICATOR-ONLY exactly as on quali_base: it never cuts the motors and never
+ *     shuts anything down. The pack's BMS remains the only automatic protection.
+ *   * MATRIX. 12x8 here vs the Uno Q's 13x8, both read in PORTRAIT — px() applies the
+ *     same 90 deg CW rotation, so an indicator ported from quali_base keeps its geometry
+ *     and only the height constant changes.
  *
  * Everything that IS drive logic is carried over unchanged in behaviour: the axis
  * dead-zone / stall-compensation split around the mecanum mix, the per-wheel mixer,
@@ -45,6 +46,8 @@
 #include <NessoFrame.h>     // portable codec; the library's WiFi transport classes are
                             // ESP32-only, so the Renesas MCU decodes packets itself
 #include "arduino_secrets.h"
+#include <Wire.h>
+#include "INA219.h"         // UPS_3S pack monitor on A4/A5; absent is non-fatal
 #include <string.h>
 #include <stdlib.h>
 
@@ -393,21 +396,49 @@ void stopMotors() {
   for (int i = 0; i < 4; i++) curPwm[i] = 0;
 }
 
-// ── 12x8 LED matrix ───────────────────────────────────────────────────────────
-// The R4's panel is 12 columns x 8 rows and is read landscape, so unlike quali_base
-// (13x8 read rotated into a logical portrait frame) no rotation is needed: fb[row][col]
-// with row 0 at the top and forward = up.
-uint8_t fb[8][12];
-uint8_t lastFB[8][12];
+// ── LED matrix — PORTRAIT, rotated 90 deg CW on the way out ───────────────────
+// The panel is physically 12 columns x 8 rows landscape, but the rover is read with the
+// board turned, so every routine below draws in a LOGICAL 8x12 PORTRAIT frame and px()
+// applies the rotation. Logical (0,0) is the TOP-LEFT as seen by the viewer, +x is right
+// and +y is DOWN. Nothing above fbRender() should touch fb[][] directly.
+//
+// This is the same arrangement quali_base uses (its panel is 13x8, so its logical frame
+// is 8x13); keeping the two in the same orientation means an indicator ported from there
+// keeps its geometry and only its height constant changes.
+//
+// The frame is banded, and the bands do not overlap:
+//   y = 0        STATUS   — link + mode                        (showDir)
+//   y = 2..H-3   STICK    — the proportional dot; its plus spans y = 1..H-2
+//   y = H-1      BATTERY  — pack gauge                         (showDir)
+const int PANEL_ROWS = 8, PANEL_COLS = 12;   // physical
+const int W = 8, H = 12;                     // LOGICAL, post-rotation: 8 wide, 12 tall
+uint8_t fb[PANEL_ROWS][PANEL_COLS];
+uint8_t lastFB[PANEL_ROWS][PANEL_COLS];
 bool    haveLast = false;
 
+// Which way the panel is turned relative to the logical frame. 1 = the 90 deg CW mapping
+// quali_base uses; 0 = the other way round. This is a PHYSICAL fact about how the board is
+// mounted on the rover, so it lives in exactly one place — like VX_SIGN. If the whole
+// display comes out upside down (status row along the wrong edge, forward reading as
+// backward), flip THIS, never the individual draw routines: they are all in logical
+// coordinates and are correct relative to each other.
+#define MATRIX_ROTATE_CW 1
+
 static inline void fbClear() { memset(fb, 0, sizeof(fb)); }
-static inline void fbSet(int r, int c) {
-  if (r >= 0 && r < 8 && c >= 0 && c < 12) fb[r][c] = 1;
+// Logical -> physical. CW: logical +x (right) becomes physical +row and logical +y (down)
+// becomes physical -col. W is the physical row count and H the physical column count,
+// which is why the logical frame is 8x12 and not 12x8.
+static inline void px(int x, int y) {
+  if (x < 0 || x >= W || y < 0 || y >= H) return;
+#if MATRIX_ROTATE_CW
+  fb[x][H - 1 - y] = 1;
+#else
+  fb[W - 1 - x][y] = 1;
+#endif
 }
 void fbRender() {
   if (haveLast && memcmp(fb, lastFB, sizeof(fb)) == 0) return;   // skip identical redraws
-  matrix.renderBitmap(fb, 8, 12);
+  matrix.renderBitmap(fb, PANEL_ROWS, PANEL_COLS);
   memcpy(lastFB, fb, sizeof(fb));
   haveLast = true;
 }
@@ -419,12 +450,16 @@ void fbRender() {
 // the OPERATOR's frame (+ = right) all the way down to here — the chassis's roller
 // mirroring is applied in the mix via VX_SIGN, not to the axes.
 //
-// ROW 0 is the status strip and the dot never reaches it: the centre is clamped to rows
-// 2..6 and cols 1..10, so the plus spans rows 1..7 at most.
-//   col 0 lit  = paired over Wi-Fi     col 1 lit = paired over BLE
-//   right edge = mode, 1..MODE_COUNT dots from col 11 leftwards:
-//                1 = DRIVE, 2 = STRAFE, 3 = WHEELTEST
-// Three dots stop at col 9, so the two groups can never run together.
+// TOP ROW (y=0) — connection on the left, mode on the right:
+//   x=0 lit = paired over Wi-Fi,  x=1 lit = paired over BLE
+//   right edge = mode, 1..MODE_COUNT dots from x=W-1 leftwards:
+//               1 = DRIVE, 2 = STRAFE, 3 = WHEELTEST
+// Three dots stop at x=5, so the two groups can never run together.
+//
+// BOTTOM ROW (y=H-1) — battery gauge, 1..W pixels. Always lights at least one pixel while
+// the INA219 is readable, so an EMPTY bottom row means "no sensor" and never "flat pack".
+// Those are opposite states: a missing sensor deliberately disables battery management and
+// leaves the rover driving, so they must not look alike.
 //
 // The THROTTLE LOCK is drawn by changing the dot's SHAPE rather than by claiming another
 // pixel: locked, it loses its vertical arms and becomes a horizontal bar. That is the
@@ -432,16 +467,32 @@ void fbRender() {
 // at a glance from the shape alone, which a lone extra status pixel would not. It also
 // cannot be confused with "throttle merely centred": that is a plus sitting on the centre
 // row, this is a bar.
-void showDir(int vy, int vx, int w, bool viaBle, uint8_t mode, bool lock) {
+void showDir(int vy, int vx, int w, bool viaBle, uint8_t mode, bool lock,
+             float pct, bool battOk, bool lowWarn) {
   fbClear();
-  fbSet(0, viaBle ? 1 : 0);
-  for (uint8_t i = 0; i <= mode && i < MODE_COUNT; i++) fbSet(0, 11 - i);
 
+  // TOP ROW — link + mode
+  px(viaBle ? 1 : 0, 0);
+  for (uint8_t i = 0; i <= mode && i < MODE_COUNT; i++) px(W - 1 - i, 0);
+
+  // BOTTOM ROW — battery gauge
+  if (battOk) {
+    int cols = 1 + (int)(pct / 100.0f * (W - 1) + 0.5f);
+    if (cols > W) cols = W;
+    if (cols < 1) cols = 1;
+    for (int i = 0; i < cols; i++) px(i, H - 1);
+  }
+  // Low-battery blink at the far end of the gauge row. It only collides with the gauge
+  // itself at ~100% charge, which cannot be true while the warning is latched.
+  if (lowWarn && (millis() / 500) % 2) px(W - 1, H - 1);
+
+  // MIDDLE BAND — the stick dot. The centre is clamped to y = 2..H-3 so the plus can
+  // never bleed into the status row above or the battery row below.
   int lat = (vx != 0) ? vx : w;               // -255..255  right(+) / left(-)
-  int c   = 1 + (lat + 255) * 9 / 510;        // 1..10
-  int r   = 2 + (255 - vy) * 4 / 510;         // 2..6  (forward = top)
-  fbSet(r, c); fbSet(r, c - 1); fbSet(r, c + 1);       // horizontal bar — always
-  if (!lock) { fbSet(r - 1, c); fbSet(r + 1, c); }     // vertical arms — only unlocked
+  int x   = (lat + 255) * (W - 1) / 510;      // 0..W-1
+  int y   = 2 + (255 - vy) * (H - 5) / 510;   // 2..H-3  (forward = top)
+  px(x, y); px(x - 1, y); px(x + 1, y);              // horizontal bar — always
+  if (!lock) { px(x, y - 1); px(x, y + 1); }         // vertical arms — only unlocked
   fbRender();
 }
 
@@ -450,34 +501,187 @@ void showDir(int vy, int vx, int w, bool viaBle, uint8_t mode, bool lock) {
 // order is wrong and strafe cannot work; fix the order, never the mecanum signs.
 void showWheelTest(int idx) {
   fbClear();
-  int c0 = (idx == 0 || idx == 1) ? 0 : 9;    // {FL,RL} left  | {FR,RR} right
-  int r0 = (idx == 0 || idx == 2) ? 0 : 5;    // {FL,FR} front | {RL,RR} rear
-  for (int dr = 0; dr < 3; dr++)
-    for (int dc = 0; dc < 3; dc++) fbSet(r0 + dr, c0 + dc);
+  int x0 = (idx == 0 || idx == 1) ? 0 : W - 3;   // {FL,RL} left  | {FR,RR} right
+  int y0 = (idx == 0 || idx == 2) ? 0 : H - 3;   // {FL,FR} front | {RL,RR} rear
+  for (int dx = 0; dx < 3; dx++)
+    for (int dy = 0; dy < 3; dy++) px(x0 + dx, y0 + dy);
   fbRender();
 }
 
-// Searching animation. Top-left block lit = scanning Wi-Fi; top-right = scanning BLE.
-// A single bar sweeps left<->right below it.
-void drawSearch(bool ble) {
+// Blinking battery outline with a proportional fill — shown instead of the stick dot once
+// the pack is critically low, so the state is unmistakable from across the room. It takes
+// the whole panel, status and gauge rows included: at this point there is nothing more
+// important for the panel to be saying.
+void showBattery(float pct) {
   fbClear();
-  if (!ble) { for (int c = 0; c < 4;  c++) fbSet(0, c); }
-  else      { for (int c = 8; c < 12; c++) fbSet(0, c); }
-  int sweep = (int)((millis() / 120) % 12);
-  fbSet(3, sweep);
-  fbSet(4, sweep);
-  fbRender();
-}
-
-// Link-loss indicator: a full-matrix X. The rover is stopped whenever this is showing.
-void drawNoSignal() {
-  fbClear();
-  for (int r = 0; r < 8; r++) {
-    int c1 = (r * 11 + 3) / 7;
-    fbSet(r, c1);
-    fbSet(r, 11 - c1);
+  if ((millis() / 500) % 2) {
+    px(3, 0); px(4, 0);                                              // terminal (top)
+    for (int x = 1; x <= 6; x++) { px(x, 1); px(x, H - 1); }          // body top/bottom
+    for (int y = 1; y <= H - 1; y++) { px(1, y); px(6, y); }          // body sides
+    int rows = (int)(pct / 100.0f * (H - 3) + 0.5f);                  // interior y = 2..H-2
+    if (rows > H - 3) rows = H - 3;
+    for (int i = 0; i < rows; i++)                                    // fills from the bottom
+      for (int x = 2; x <= 5; x++) px(x, H - 2 - i);
   }
   fbRender();
+}
+
+// Searching animation. Top block lit on the left = scanning Wi-Fi, on the right = BLE.
+// A short bar sweeps DOWN the tall axis below it.
+void drawSearch(bool ble) {
+  fbClear();
+  if (!ble) { for (int x = 0; x < 3; x++) px(x, 0); }
+  else      { for (int x = W - 3; x < W; x++) px(x, 0); }
+  int sweep = 2 + (int)((millis() / 120) % (H - 3));
+  px(3, sweep); px(4, sweep);
+  fbRender();
+}
+
+// Link-loss indicator: a full-panel X. The rover is stopped whenever this is showing.
+void drawNoSignal() {
+  fbClear();
+  for (int y = 0; y < H; y++) {
+    int x1 = y * (W - 1) / (H - 1);
+    px(x1, y);
+    px(W - 1 - x1, y);
+  }
+  fbRender();
+}
+
+// ── Battery: UPS_3S (3x 18650 in series) via INA219 @ 0x41 on Wire (A4/A5) ────
+// Ported from quali_base 2026-08-06, thresholds and state machine unchanged.
+//
+// Thresholds are on the *pack* voltage (bus + shunt drop), smoothed by an EMA: the motors
+// draw from the same pack, so a stall sags the rail well below the true state of charge.
+// tau ~= 20 s at 1 Hz rides out any sag short of an actually flat battery, so a brief sag
+// can never trip the display while a real decline still shows within ~30 s.
+//
+// INDICATOR-ONLY, exactly as on quali_base: this does NOT cut the motors and does not shut
+// anything down. The pack's own BMS is the only automatic protection. The consequence,
+// stated plainly because it is a real trade: a flat pack under motor load will be dragged
+// to BMS cutoff if the operator ignores the panel.
+//
+// The failsafe direction here is the OPPOSITE of the link's, deliberately. An absent or
+// failed INA219 reports state -1 and leaves the rover driving, because losing a *sensor*
+// must not immobilise the rover — whereas losing contact with the *operator* must never
+// leave it driving. Do not "make them consistent".
+INA219 ina;
+
+const float V_MIN     = 9.0f;    // 3.0 V/cell — pack empty (0 %)
+const float V_MAX     = 12.6f;   // 4.2 V/cell — pack full (100 %)
+const float V_WARN    = 9.6f;    // ~17 % — advisory only (blinking gauge-row pixel)
+const float V_CRIT    = 9.3f;    // ~8 %  — full-panel battery display; no action taken
+const float V_RELEASE = 10.5f;   // critical latch clears only once clearly recharged
+const float WARN_HYST = 0.15f;   // warn releases at V_WARN + this
+
+const uint32_t BATT_SAMPLE_MS = 1000;
+const uint32_t BATT_REPORT_MS = 5000;    // serial cadence; quali_base pushed this to its MPU
+const uint32_t BATT_RETRY_MS  = 5000;    // re-probe cadence while the module is absent
+const uint32_t EMA_RESEED_MS  = 30000;   // gap after which the carried EMA is stale
+const float    EMA_ALPHA      = 0.05f;   // tau ~= 20 s at 1 Hz
+const int      LOW_CONFIRM    = 10;      // consecutive samples before a state change
+
+// -1 = sensor absent, 0 = ok, 1 = warn, 2 = critical. -1 is the failsafe (see above).
+int   battState  = -1;
+bool  battReady  = false;    // INA219 has answered at least once
+bool  battSeeded = false;    // battEma holds a real value (survives an I2C dropout)
+float battEma = 0.0f, battPct = 0.0f, battV = 0.0f, battI = 0.0f;
+bool  battCrit = false;      // latched
+bool  battWarn = false;
+int   critCount = 0, relCount = 0, warnCount = 0, warnClearCount = 0;
+uint32_t lastGoodMs = 0;     // millis() of the last successful sample
+
+float pctFromV(float v) {
+  float p = (v - V_MIN) / (V_MAX - V_MIN) * 100.0f;
+  if (p > 100.0f) p = 100.0f;
+  if (p < 0.0f)   p = 0.0f;
+  return p;
+}
+void resetBattCounters() { critCount = relCount = warnCount = warnClearCount = 0; }
+
+void reportBattery(uint32_t now) {
+  static uint32_t lastReport = 0;
+  if (now - lastReport < BATT_REPORT_MS) return;
+  lastReport = now;
+  if (battState < 0) { Serial.println("[batt] no sensor"); return; }
+  Serial.print("[batt] "); Serial.print(battEma, 2); Serial.print("V ");
+  Serial.print(battPct, 0); Serial.print("% ");
+  Serial.print(battI, 0);   Serial.print("mA state=");
+  Serial.println(battState);
+}
+
+void pollBattery(uint32_t now) {
+  static uint32_t lastSample = 0, lastRetry = 0;
+
+  if (!battReady) {                       // (re)probe — the module may be off at boot
+    reportBattery(now);                   // keep saying we are blind
+    if (now - lastRetry < BATT_RETRY_MS) return;
+    lastRetry = now;
+    if (!ina.begin()) { battState = -1; return; }
+    battReady = true;
+    resetBattCounters();                  // a confirmation streak must not span a data gap
+    Serial.println("[batt] INA219 @ 0x41 online");
+  }
+
+  if (now - lastSample < BATT_SAMPLE_MS) return;
+  lastSample = now;
+
+  float packV, busV, mA, W_;
+  if (!ina.sample(packV, busV, mA, W_)) {
+    Serial.println("[batt] INA219 read failed - re-probing");
+    battReady = false;
+    battState = -1;
+    lastRetry = now;
+    resetBattCounters();
+    return;
+  }
+
+  battV = packV;
+  battI = mA;
+  // Carry the smoothed value across a short I2C dropout. Re-seeding from a single raw
+  // sample would throw away the sag immunity the EMA exists for — and the event most
+  // likely to glitch the bus (a stall brownout) is exactly the event that produces a
+  // sagged reading, so a reseed there could latch CRITICAL on a half-full pack. Only
+  // reseed when the gap was long enough that the old value is genuinely stale.
+  if (!battSeeded || now - lastGoodMs > EMA_RESEED_MS) {
+    battEma = packV;
+    battSeeded = true;
+    resetBattCounters();
+  } else {
+    battEma = EMA_ALPHA * packV + (1.0f - EMA_ALPHA) * battEma;
+  }
+  lastGoodMs = now;
+  battPct = pctFromV(battEma);
+
+  // Critical: latched, so the panel does not flicker between critical and normal as the
+  // rail sags and recovers under motor load. Both the smoothed AND the instantaneous
+  // voltage must be low: the EMA is the slow guard against a stall sag, and the raw
+  // sample is a fast veto that clears the streak as soon as the rail recovers — so a
+  // freshly re-seeded EMA cannot walk into a latch.
+  if (!battCrit) {
+    if (battEma < V_CRIT && packV < V_CRIT) {
+      if (++critCount >= LOW_CONFIRM) {
+        battCrit = true;
+        Serial.println("[batt] CRITICAL - indicator only, no action taken");
+      }
+    } else critCount = 0;
+  } else {
+    if (battEma > V_RELEASE) {
+      if (++relCount >= LOW_CONFIRM) { battCrit = false; relCount = 0; critCount = 0; }
+    } else relCount = 0;
+  }
+
+  // Warning: advisory, with hysteresis so it does not flicker at the threshold.
+  if (!battWarn) {
+    if (battEma < V_WARN) { if (++warnCount >= LOW_CONFIRM) { battWarn = true; warnCount = 0; } }
+    else warnCount = 0;
+  } else {
+    if (battEma > V_WARN + WARN_HYST) { if (++warnClearCount >= LOW_CONFIRM) { battWarn = false; warnClearCount = 0; } }
+    else warnClearCount = 0;
+  }
+
+  battState = battCrit ? 2 : (battWarn ? 1 : 0);
+  reportBattery(now);
 }
 
 // ── Pairing: accept a decoded frame from any transport ────────────────────────
@@ -613,6 +817,13 @@ bool              bleBegun = false;
 
 void enterBle() {
   Serial.println("[ble] starting BLE, scanning for \"NESSO\" ...");
+  // NOTE: a failed begin() is NOT recoverable in software here. Uploading a sketch resets
+  // the RA4M1 but NOT the ESP32-S3, so a reflash taken while BLE was live leaves the modem
+  // running the previous firmware's stack and begin() fails against it. `BLE.end()` +
+  // `BLE.begin()` was tried on hardware 2026-08-06 and fails identically — it was removed
+  // rather than left in, because it recovered nothing and doubled the time each dead BLE
+  // window costs. Only a physical power cycle (unplug USB) clears it. Don't re-add the
+  // retry without testing it against a genuinely wedged modem.
   bleBegun = BLE.begin();
   if (!bleBegun) {
     // Not necessarily fatal or permanent: the ESP32-S3 survives an RA4M1 reset, so a
@@ -898,8 +1109,16 @@ void driveTick(bool linkFresh, uint32_t now) {
   // sweep, which loop() draws because only it knows which transport is being probed.
   // Drawing the X here as well would have the two fighting every pass, defeating
   // fbRender()'s identical-frame skip and flickering the panel.
+  //
+  // A critically low pack outranks everything except the wheel test — the pack is the one
+  // condition the operator cannot infer from the rover's behaviour, and the rover keeps
+  // driving regardless (indicator-only), so the panel is the only place it can be said.
+  // The wheel test still wins because it is a bench diagnostic whose whole purpose is the
+  // corner it lights, and it runs with the motors on a timer rather than under command.
   if (testIdx >= 0)     showWheelTest(testIdx);
-  else if (linkFresh)   showDir(vy, vx, w, linkState == PAIRED_BLE, driveMode, throttleLock);
+  else if (battCrit)    showBattery(battPct);
+  else if (linkFresh)   showDir(vy, vx, w, linkState == PAIRED_BLE, driveMode, throttleLock,
+                                battPct, battState >= 0, battWarn);
   else if (isPaired())  drawNoSignal();            // paired but silent -> "no signal"
 }
 
@@ -916,12 +1135,20 @@ void setup() {
   matrix.begin();
   // Boot self-test, as quali_base does: light every pixel briefly. Worth the 400 ms
   // because every other screen here is sparse — a dead row or a stuck pixel would
-  // otherwise read as a mode dot, a link lamp or a stick position that isn't there.
+  // otherwise read as a mode dot, a link lamp, a battery bar or a stick position that
+  // isn't there.
   memset(fb, 1, sizeof(fb));
-  matrix.renderBitmap(fb, 8, 12);
+  matrix.renderBitmap(fb, PANEL_ROWS, PANEL_COLS);
   delay(400);
   haveLast = false;            // fbRender()'s cache never saw this frame
   drawNoSignal();
+
+  if (ina.begin()) {           // UPS_3S on A4/A5; absent is non-fatal by design
+    battReady = true;
+    Serial.println("[batt] INA219 @ 0x41 online");
+  } else {
+    Serial.println("[batt] INA219 not found - battery indicator disabled");
+  }
 
   if (WiFi.status() == WL_NO_MODULE) {
     Serial.println("WiFi/BLE module not found!");
@@ -965,6 +1192,11 @@ void loop() {
   // stateEnteredMs (set by acceptFrame too), which is why one timestamp covers both.
   uint32_t now = millis();
 
+  // Battery is polled outside the drive tick: it is rate-limited internally to 1 Hz and
+  // its I2C transaction is short, so it costs nothing here and keeps sampling while the
+  // link is down — which is exactly when a pack is most likely to be running flat.
+  pollBattery(now);
+
   bool paired    = isPaired();
   bool linkFresh = paired && haveFrame && (now - lastFrameMs) < FAILSAFE_MS;
 
@@ -991,7 +1223,11 @@ void loop() {
     }
   } else {
     heartbeat();
-    if (driveMode != MODE_WHEELTEST) drawSearch(linkState == SEARCH_BLE);
+    // Skip the sweep for anything driveTick() already drew this pass, or the two fight
+    // every loop and defeat fbRender()'s identical-frame skip. Both of those screens
+    // outrank "still searching": the wheel test is why the rover is on the bench, and a
+    // critical pack is the one thing the operator cannot infer from its behaviour.
+    if (driveMode != MODE_WHEELTEST && !battCrit) drawSearch(linkState == SEARCH_BLE);
 #if ENABLE_BLE
     // Bail out of a BLE window whose BLE.begin() failed instead of sitting out its full
     // dwell: there is no stack to scan, and Wi-Fi — which still works — is where a remote

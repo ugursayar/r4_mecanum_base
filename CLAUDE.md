@@ -159,23 +159,55 @@ since it is by then calibrated for forward motion.
 - **Vision / `MODE_AUTO` / the host ARM chain** — no camera, no MPU. With nothing left to
   bind to the double click, mode selection also drops the 500 ms commit window; clicks
   commit on the release. Do not re-add a gesture window without a gesture to disambiguate.
-- **The INA219 battery monitor and its three matrix screens** (bottom-row gauge, low-battery
-  corner blink, full-screen critical battery). It is indicator-only in quali_base — it takes
-  no action — so it is not drive logic. A4/A5 are reserved for it.
+(The INA219 battery monitor was initially left out for the same reason — it is
+indicator-only, so not drive logic — but was ported in full on 2026-08-06 when the panel
+gained a dedicated gauge row. It remains indicator-only: it never cuts the motors and never
+shuts anything down, so **the pack's BMS is the only automatic protection**, and a flat pack
+under load will be dragged to BMS cutoff if the operator ignores the panel. Note its
+failsafe points the *opposite* way to the link's: an absent sensor reports state −1 and
+leaves the rover driving, because losing a sensor must not immobilise it, whereas losing the
+operator must never leave it driving. Do not "make them consistent".)
 
-### Matrix — 12x8 landscape, drawn directly
+### Matrix — logical 8x12 PORTRAIT, rotated 90 deg CW on the way out
 
-quali_base's panel is 13x8 read *rotated*, so its `px()` maps a logical 8x13 portrait frame.
-The R4's is read landscape, so `fb[row][col]` is direct and no rotation helper exists here.
-Indicators that did port keep their semantics: the proportional plus-shaped stick dot
-(forward = up), the **throttle lock dropping the dot's vertical arms into a horizontal bar**
-(the indicator describing itself — the arms it drops are the axis it gave up, and it cannot
-be confused with a merely centred throttle), mode dots along the top-right edge, the
-top-left link lamp, the 3x3 wheel-test quadrant, and the boot self-test.
+The panel is physically 12 cols x 8 rows, but the board is read turned, so every draw
+routine works in a **logical 8 wide x 12 tall portrait frame** and `px(x, y)` applies the
+rotation — logical (0,0) is the viewer's top-left, +x right, +y **down**. Nothing above
+`fbRender()` may touch `fb[][]` directly. This matches quali_base (whose logical frame is
+8x13), so an indicator ported from there keeps its geometry and only `H` changes.
+
+`MATRIX_ROTATE_CW` selects the direction and is the **only** place the board's mounting
+orientation is encoded — same discipline as `VX_SIGN`. If the whole display comes out
+inverted, flip that constant; never "fix" an individual draw routine, since they are all
+correct relative to one another in logical coordinates.
+
+The frame is **banded, and the bands never overlap**:
+
+| band | contents |
+|---|---|
+| `y = 0` | link lamp (`x=0` Wi-Fi, `x=1` BLE) + mode dots (1..`MODE_COUNT` from `x=W-1` leftwards) |
+| `y = 2..H-3` | the stick dot; its plus spans `y = 1..H-2`, so it can never reach either strip |
+| `y = H-1` | battery gauge (1..8 px) + the low-battery blink at `x=W-1` |
+
+**An empty bottom row means "no INA219", never "flat pack"** — the gauge always lights at
+least one pixel while the sensor answers. Those are opposite states (a missing sensor
+deliberately disables battery management and leaves the rover driving), so they must not
+look alike.
+
+Ported semantics kept: the throttle lock **drops the dot's vertical arms into a horizontal
+bar** (the indicator describing itself — the arms it drops are the axis it gave up, and it
+cannot be confused with a merely centred throttle), and `showBattery()` takes the whole
+panel on a latched-critical pack.
 
 R4-only: `drawSearch()` and `drawNoSignal()`, which exist because the R4 has link states
-quali_base's MCU never had. The top-left+1 cell that is quali_base's *arm lamp* is reused
-here to say **which transport** is paired (col 0 = Wi-Fi, col 1 = BLE).
+quali_base's MCU never had. The `x=1` cell that is quali_base's *arm lamp* says **which
+transport** is paired here instead.
+
+**Display ownership is split three ways** and the precedence is deliberate:
+`showWheelTest` > `showBattery` (critical) > `showDir` / `drawNoSignal` in `driveTick()`,
+with `drawSearch()` drawn by `loop()` — which is why `loop()` must skip it when
+`MODE_WHEELTEST` or `battCrit` already claimed the panel. Two routines drawing per pass
+defeat `fbRender()`'s identical-frame skip and flicker the display.
 
 `fbRender()` skips identical frames. Anything that writes the panel outside it — the boot
 self-test does — must set `haveLast = false`, or the next draw is suppressed.
@@ -229,6 +261,15 @@ modem keeps whatever state the *previous* firmware left it in. After the pair/un
 above (which left the modem thrashing a BLE connection at 10 Hz), `BLE.begin()` failed on
 every subsequent boot — including boots of corrected firmware. **Unplugging USB and
 replugging cleared it immediately**, and BLE has worked since.
+
+**This recurs on every reflash taken while BLE was live**, which during development is
+most of them. Budget for it: after flashing, unplug and replug USB if you need BLE. Wi-Fi
+is unaffected throughout, so development can continue over UDP/TCP without power cycling.
+
+**`BLE.end()` + `BLE.begin()` does NOT recover it** — tried on hardware 2026-08-06, fails
+identically, and was removed rather than left in because it recovered nothing while
+doubling the time each dead BLE window costs. Don't re-add that retry without testing it
+against a genuinely wedged modem.
 
 So: `BLE.begin() failed` is not automatically an out-of-date modem firmware. Check a full
 power cycle *before* reaching for the firmware updater. `enterBle()` records success in
