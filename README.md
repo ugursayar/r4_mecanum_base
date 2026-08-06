@@ -7,14 +7,16 @@ Wi-Fi (UDP + TCP) and Bluetooth LE** and auto-pairing with whichever remote spea
 The drive logic is a port of [`quali_base`](../quali_base) — the same chassis running on
 an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
 
-> **Fully calibrated on hardware 2026-08-06.** `MOTORS[]` order, the `inv` flags and
-> `VX_SIGN` are all **measured**, not guessed — see **Bring-up** for what each step
-> established. BLE pairing, sustained link, frame decode and the mix for forward, reverse,
-> rotate and strafe are confirmed.
+> **Calibrated and driving on hardware 2026-08-06.** `MOTORS[]` order, the `inv` flags and
+> `VX_SIGN` are all **measured**, not guessed — see **Bring-up**. Confirmed on the rover:
+> BLE pairing and sustained link, all four motors, forward / reverse / rotate / strafe,
+> mode changes, the LED matrix indicators, and the battery gauge on pack power.
 >
 > `[batt] no sensor` on a USB-powered run is **expected, not a fault**: the UPS is switched
 > off while USB is connected, so the INA219 is unpowered. It is re-probed every 5 s and
 > joins on its own once the pack is on.
+>
+> Not yet exercised: the **Wi-Fi UDP/TCP frame path** (driving has been over BLE).
 
 Engineering notes and traps are in [CLAUDE.md](CLAUDE.md).
 
@@ -194,7 +196,7 @@ nine seconds and nothing services the drive tick while it does.
 | `UDP_PORT` / `TCP_PORT` | `8889` / `8890` | must match the N1 firmware's `udp_port` / `tcp_port` |
 | `SEARCH_PREFER_BLE` | `0` | cold-boot search preference; thereafter sticky |
 | `SEARCH_LONG_MS` / `SEARCH_SHORT_MS` | `15000` / `4000` | dwell on the preferred transport / brief probe of the other |
-| `MIN_PWM` / `MAX_PWM` | `60` / `255` | stall floor / ceiling |
+| `MIN_PWM` / `MAX_PWM` | `60` / `255` | stall floor / ceiling — both validated on the rover, see **Power and PWM** |
 | `REMOTE_DEADBAND` | `25` | applies to both sticks. Belt-and-braces since NessoLink 1.1.2 made "a released stick reads exactly 0" part of the contract; kept as the only cover against an out-of-date transmitter. A non-zero rest reading now means a stale handheld build, not jitter |
 | `SLEW_STEP` | `40` | max PWM change per 60 ms tick |
 | `VX_SIGN` / `MOTORS[].inv` | — | calibrate on the bench, see **Bring-up** |
@@ -276,3 +278,39 @@ made the pack indicator-only.
 Its failsafe points the **opposite way to the link's**, on purpose: an absent or failed
 INA219 reports "no sensor" and leaves the rover driving, because losing a *sensor* must not
 immobilise it — whereas losing contact with the *operator* must never leave it driving.
+
+## Power and PWM — is full stick really full power?
+
+Yes. `MAX_PWM = 255` reaches a genuine **100% duty cycle**, not 254/255. Traced through the
+R4 core rather than assumed:
+
+```c
+analogWrite(pin, 255)
+  → pulse_perc(255 * 100.0 / ((1 << 8) - 1))   // _writeResolution = 8  → 100.0 %
+  → pulse = period * 100/100 = period
+  → set_duty_cycle(period)                      // compare == period → no low phase
+```
+
+So at full stick the EN pin sits **continuously HIGH at 5 V** (the R4 is a 5 V logic board).
+PWM frequency is **490 Hz** (`STANDARD_PWM_FREQ_HZ` in the core's `FspTimer.h`) — the same
+as a classic Uno, and comfortably fine for an L298N.
+
+**That 5 V is not what drives the motors.** EN is a logic enable into the L298N; motor
+current comes from the module's `Vs` rail — the 12.6 V pack — never from the Arduino's 5 V.
+Full throttle means the H-bridge is on 100% of the time, so each motor sees roughly
+
+```
+12.6 V (pack, sagging under load)  −  ~2 V (L298N drop)  ≈  10.5 V
+```
+
+That drop is the classic L298N's known weakness: it is a BJT H-bridge, two saturated
+transistors in series per path, so the loss is largely load-independent, worsens with
+current, and leaves as heat. Firmware cannot recover it.
+
+**`MAX_PWM` therefore has no headroom left.** If the rover ever needs more, the remaining
+levers are hardware — a higher pack voltage, or a MOSFET driver (TB6612FNG, DRV8871,
+BTS7960) in place of the L298N, which would give back most of that 2 V.
+
+`MIN_PWM = 60` is the stall floor and was **validated on the rover under real load**: it
+moves easily on minimal commands, so the floor is high enough to break stiction without
+being so high that fine control near centre goes coarse.

@@ -138,6 +138,26 @@ transposed against the rear — that is the wiring, not a slip.
 D0/D1 (Serial1) and **A4/A5** are untouched; A4/A5 carry the INA219. D10–D13 are the SPI
 bus, used here as plain GPIO, which costs nothing because nothing on this board needs SPI.
 
+### Full stick IS 100% duty — and the 5 V is not the motor supply
+
+`analogWrite(255)` on the R4 reaches a genuine **100% duty cycle**, verified in the core,
+not assumed: it becomes `pulse_perc(100.0)` → `set_duty_cycle(period)`, i.e. compare equal
+to period, so there is no low phase. `MAX_PWM = 255` therefore leaves **no headroom** —
+there is nothing above it to raise. Default PWM frequency is **490 Hz**
+(`STANDARD_PWM_FREQ_HZ`, `FspTimer.h`), fine for an L298N.
+
+Don't confuse the two voltages. EN is a **logic enable** at 5 V (the R4 is a 5 V board);
+motor current comes from the L298N's `Vs` rail — the 12.6 V pack — never from the Arduino.
+The classic L298N is a BJT H-bridge with two saturated transistors in series per path, so
+it drops **~2 V** largely independent of load, worsening with current and leaving as heat:
+each motor sees roughly 10.5 V at full throttle off a 12.6 V pack. Firmware cannot recover
+that. If more power is ever needed the levers are hardware only — a higher pack voltage, or
+a MOSFET driver (TB6612FNG, DRV8871, BTS7960).
+
+`MIN_PWM = 60` was **validated on the rover under real load** — it moves easily on minimal
+commands. Too low and a wheel buzzes without turning; too high and control near centre goes
+coarse. Don't retune either constant without a loaded bench run.
+
 ### `MOTORS[]` order is geometry; `inv` and `VX_SIGN` are bench facts
 
 **Calibrated 2026-08-06 — `MOTORS[]` order and `inv` are now MEASURED.** The wheel test
@@ -340,11 +360,13 @@ limiter stepping in `SLEW_STEP` units; the aux flag arriving set (**a Mini JoyC 
 exactly the case the docs warn about) and its axes resting at exactly 0, as NessoLink 1.1.2
 requires.
 
-Since confirmed: all four motors, the wheel-test corner mapping, the `inv` directions and
-`VX_SIGN` (see the calibration note above).
+Since confirmed on the rover: all four motors; the wheel-test corner mapping; the `inv`
+directions; `VX_SIGN`; forward, reverse, rotate and strafe; mode changes; the LED matrix
+indicators; and the battery gauge on pack power.
 
-Not confirmed: the mode gestures, the throttle lock, the aux-stick strafe path, the whole
-Wi-Fi UDP/TCP frame path, and the battery gauge under a real pack.
+Not confirmed: the **Wi-Fi UDP/TCP frame path** — all driving so far has been over BLE, so
+`pollWifiFrames()`, the source-lock and `TcpParser`'s re-assembly have never handled a real
+N1 frame.
 
 **`[batt] no sensor` on USB is expected, not a fault** — the UPS is switched off whenever
 USB is connected, so the INA219 is unpowered. `pollBattery()` re-probes every
