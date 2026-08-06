@@ -172,14 +172,29 @@ Motor MOTORS[4] = {
   { 4,  7,  6, false},  // rear-right   L298N#1(rear) -B: IN3=D4,  IN4=D7,  ENB=D6  (~)
 };
 
-// Sign of the strafe axis as the CHASSIS sees it. The mecanum mix below assumes the
-// standard X roller layout (viewed from above the top rollers form an X: FL/RR at
-// +45 deg, FR/RL at -45 deg). A chassis whose rollers are mirrored against that slides
-// left when the mix says right — quali_base's is, hence its `-vx`. Flip this ONE
-// constant if strafe goes the wrong way; one negation covers the diagonals too, since
-// the mirroring is global. Keeping it here and nowhere else is what lets everything
-// upstream — the matrix dot, the serial log — read `vx` as "+ = the rover slides right".
-const int VX_SIGN = +1;
+// Sign of the strafe axis as the CHASSIS sees it — MEASURED on this build 2026-08-06.
+//
+// The mecanum mix below assumes the standard X roller layout (viewed from above, the top
+// rollers form an X: FL/RR at +45 deg, FR/RL at -45 deg). This chassis's rollers are
+// MIRRORED against that, so what the mix calls "strafe right" slid it LEFT until this went
+// negative. quali_base is mirrored the same way and carries the same negation, which is
+// unsurprising — it is the same chassis design.
+//
+// That this is a ROLLER fact and not a wiring one is what the bring-up order proves: the
+// wheel test had already confirmed the corner mapping, and forward already tracked straight
+// with `inv` calibrated, so nothing about which motor is which could still be wrong. Only
+// the diagonal the rollers push along was left. Rotation needed no flip either, which is
+// the other half of the proof — a wiring fault would have shown up there too.
+//
+// One negation covers the diagonals as well, since the mirroring is global. It lives HERE
+// and nowhere else, which is what lets everything upstream — the matrix dot, dirName(), the
+// serial log — read `vx` as "+ = the rover slides right". Until this constant existed the
+// equivalent negation sat in the MODE_STRAFE case on quali_base, which drove the motors
+// correctly but mirrored the display against the real motion.
+//
+// Do NOT "fix" a strafe fault with the `inv` flags: they are calibrated for forward motion
+// and would break straight tracking.
+const int VX_SIGN = -1;
 
 // ── Drive tuning (PWM units, 0..255) ──────────────────────────────────────────
 const int MIN_PWM   = 60;   // below this the motors stall; commands snap up to this

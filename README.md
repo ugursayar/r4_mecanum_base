@@ -7,13 +7,13 @@ Wi-Fi (UDP + TCP) and Bluetooth LE** and auto-pairing with whichever remote spea
 The drive logic is a port of [`quali_base`](../quali_base) — the same chassis running on
 an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
 
-> **Motors calibrated on hardware 2026-08-06.** `MOTORS[]` order and the `inv` flags are
-> now **measured**, not guessed: every wheel-test slot drove the corner the matrix lit, and
-> all four wheels run forward. BLE pairing, sustained link, frame decode and the mix for
-> forward/reverse/rotate were confirmed earlier over serial.
+> **Fully calibrated on hardware 2026-08-06.** `MOTORS[]` order, the `inv` flags and
+> `VX_SIGN` are all **measured**, not guessed — see **Bring-up** for what each step
+> established. BLE pairing, sustained link, frame decode and the mix for forward, reverse,
+> rotate and strafe are confirmed.
 >
-> Still outstanding: **`VX_SIGN` (strafe direction) is unverified** — see step 3 of
-> **Bring-up**. The INA219 has not yet answered on A4/A5 (`[batt] no sensor`).
+> Outstanding: the INA219 has not yet answered on A4/A5 (`[batt] no sensor`), so the
+> battery gauge row stays dark.
 
 Engineering notes and traps are in [CLAUDE.md](CLAUDE.md).
 
@@ -148,9 +148,15 @@ cannot be shortcut, and is kept because it is how the current values were derive
    The symmetry is itself evidence the result is right.* Four wheels turning the same
    **absolute** direction is the wrong state — it drives one side backwards.
 
-3. ⬜ **Strafe.** Only now check it. If the rover slides the wrong way, flip **`VX_SIGN`** —
-   not `inv`, which is by now calibrated for forward motion and would break straight
-   tracking.
+3. ✅ **Strafe.** Only now check it. *Result: the rover slid the wrong way, so `VX_SIGN`
+   is **`-1`** — this chassis's rollers are mirrored against the standard X layout, the
+   same as quali_base's.* Flip that **one constant**, never `inv`, which is by now
+   calibrated for forward motion and would break straight tracking.
+
+   The order is what makes this attributable: by step 3 the corner mapping was confirmed
+   and forward already tracked straight, so no wiring fault could still be in play — only
+   the diagonal the rollers push along was left. Rotation needing no flip is the other half
+   of the proof, since a wiring fault would have shown up there too.
 
 ## Controls
 

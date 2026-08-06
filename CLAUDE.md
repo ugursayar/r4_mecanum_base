@@ -145,7 +145,11 @@ drove the corner the matrix lit in every slot (order confirmed), and only front-
 backwards, giving `inv = {true, true, false, false}`: the whole left side inverted, the
 whole right side not. That symmetry is the expected result for a chassis whose sides are
 mirrored by mounting with every motor conventionally terminated, so it corroborates itself.
-**`VX_SIGN` remains unverified** — strafe has not been driven.
+**`VX_SIGN = -1`, also measured**: strafe slid the wrong way at `+1`, so this chassis's
+rollers are mirrored against the standard X layout — the same as quali_base's, which
+carries the same negation. The bring-up order is what makes that attributable to the
+rollers rather than to wiring: the corner mapping was already confirmed and forward already
+tracked straight, and rotation needed no flip. Calibration is complete.
 
 The pin map is byte-for-byte quali_base's, deliberately, so the same chassis and harness
 move between the Uno Q and the R4 with nothing re-terminated. The one table divergence is
