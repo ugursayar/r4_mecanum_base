@@ -62,8 +62,8 @@ dwell lets a UDP remote pair before any BLE probe, and once paired the R4 stops 
 entirely. Shortening `SEARCH_LONG_MS` or making the probes symmetric reintroduces a
 receiver that fights the transmitter it is trying to hear.
 
-`ENABLE_BLE 0` builds Wi-Fi-only with no ArduinoBLE dependency (27% flash vs 39%). BLE
-needs an up-to-date ESP32-S3 modem firmware on the R4.
+`ENABLE_BLE 0` builds Wi-Fi-only with no ArduinoBLE dependency. BLE needs a working
+ESP32-S3 modem firmware on the R4 — see the power-cycle note below before suspecting it.
 
 ### The aux axis convention belongs to the PROTOCOL — never compensate here
 
@@ -115,14 +115,28 @@ direction — the rover curves away whenever a combined command saturates. `driv
 scales all four down against the max instead. `clampAxis()` on the summed axes is what keeps
 two sticks pushing the same axis from handing that ratio to the overflow rescale.
 
-### Pin map is constrained, not arbitrary
+### Pin map is constrained, and is deliberately quali_base's
 
-`analogWrite()` is only real PWM on **D3 D5 D6 D9 D10 D11**; on any other pin the core
-degrades it to a 0/1 digital write, so the four `EN` pins must come from that set. EN takes
-D3/D5/D6/D9, leaving D10/D11 for SPI. Avoided on purpose: D0/D1 (Serial1), D13 (built-in
-LED), and **A4/A5 (I2C)** — the last so quali_base's INA219 pack monitor can be added
-without moving a motor pin. Direction pins take the non-PWM digitals D2/D4/D7/D8/D12 plus
-A0/A1/A2 as plain digital outputs.
+`analogWrite()` is only real PWM on **D3 D5 D6 D9 D10 D11** — confirmed in the `UNOWIFIR4`
+variant's `initVariant()`, not assumed. On any other pin the core **silently degrades it to
+a 0/1 digital write**, which would give exactly two speeds, stopped and flat out, so the
+four `EN` pins must come from that set.
+
+| wheel | module, channel | IN a | IN b | EN |
+|---|---|---|---|---|
+| front-left | #2 front, **B** | D12 | D13 | **~D10** |
+| rear-left | #1 rear, **A** | D2 | D3 | **~D5** |
+| front-right | #2 front, **A** | D8 | D11 | **~D9** |
+| rear-right | #1 rear, **B** | D4 | D7 | **~D6** |
+
+Identical to quali_base's table on purpose: the same chassis and motor harness move between
+the Uno Q and the R4 with nothing re-terminated, and the two `MOTORS[]` tables read against
+each other line for line. The two modules have **opposite channel conventions** (rear
+`A = left, B = right`; front `A = right, B = left`), which is why the front pair looks
+transposed against the rear — that is the wiring, not a slip.
+
+D0/D1 (Serial1) and **A4/A5** are untouched; A4/A5 carry the INA219. D10–D13 are the SPI
+bus, used here as plain GPIO, which costs nothing because nothing on this board needs SPI.
 
 ### `MOTORS[]` order is geometry; `inv` and `VX_SIGN` are bench facts
 
