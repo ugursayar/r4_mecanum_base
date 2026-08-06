@@ -8,15 +8,16 @@ The drive logic is a port of [`quali_base`](../quali_base) — the same chassis 
 an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
 
 > **Calibrated and driving on hardware 2026-08-06.** `MOTORS[]` order, the `inv` flags and
-> `VX_SIGN` are all **measured**, not guessed — see **Bring-up**. Confirmed on the rover:
-> BLE pairing and sustained link, all four motors, forward / reverse / rotate / strafe,
-> mode changes, the LED matrix indicators, and the battery gauge on pack power.
+> `VX_SIGN` are all **measured** — see **Bring-up**. Confirmed on the rover: BLE pairing and
+> sustained link, Wi-Fi **UDP** pairing and sustained link, all four motors, forward /
+> reverse / rotate / strafe, mode changes, the LED matrix indicators, and the battery gauge
+> on pack power.
 >
 > `[batt] no sensor` on a USB-powered run is **expected, not a fault**: the UPS is switched
 > off while USB is connected, so the INA219 is unpowered. It is re-probed every 5 s and
 > joins on its own once the pack is on.
 >
-> Not yet exercised: the **Wi-Fi UDP/TCP frame path** (driving has been over BLE).
+> **TCP is disabled** (`ENABLE_TCP 0`) — see **Transports** for the measured reason.
 
 Engineering notes and traps are in [CLAUDE.md](CLAUDE.md).
 
@@ -192,6 +193,8 @@ nine seconds and nothing services the drive tick while it does.
 | constant | default | notes |
 |---|---|---|
 | `ENABLE_BLE` | `1` | `0` = Wi-Fi only, no ArduinoBLE dependency or modem-firmware update |
+| `ENABLE_TCP` | `0` | leave off — `WiFiServer::available()` blocks ~10 s per poll, see **Transports** |
+| `SEARCH_FAIR_AFTER` | `2` | fruitless windows after which the sticky preference stops applying |
 | `SECRET_SSID` / `SECRET_PASS` | `arduino_secrets.h` | must be the N1's 2.4 GHz network |
 | `UDP_PORT` / `TCP_PORT` | `8889` / `8890` | must match the N1 firmware's `udp_port` / `tcp_port` |
 | `SEARCH_PREFER_BLE` | `0` | cold-boot search preference; thereafter sticky |
@@ -314,3 +317,48 @@ BTS7960) in place of the L298N, which would give back most of that 2 V.
 `MIN_PWM = 60` is the stall floor and was **validated on the rover under real load**: it
 moves easily on minimal commands, so the floor is high enough to break stiction without
 being so high that fine control near centre goes coarse.
+
+## Transports — why TCP is off
+
+`ENABLE_TCP` defaults to **0** and should stay there unless something genuinely needs TCP.
+
+WiFiS3's `WiFiServer::available()` is not a cheap poll. It is a **synchronous modem
+round-trip** that performs the `accept` on the ESP32-S3:
+
+```cpp
+modem.write(string(PROMPT(_SERVERAVAILABLE)), res, ...);   // blocks until the modem answers
+```
+
+With no client pending it waits out the modem's timeout — **measured at ~10.1 s on this
+board, on every loop pass**. That is 14x `FAILSAFE_MS`, so the symptom is not "TCP is slow"
+but "the rover is unusable over Wi-Fi": the drive loop stops, the link goes stale, the rover
+stops, it unpairs, re-pairs on the next buffered datagram, and does it again 10 s later.
+
+The N1's Wi-Fi mode is UDP, so nothing is lost. The stream re-assembler (`TcpParser`) is
+kept and still correct — it is the *polling* that is unaffordable. If TCP is ever needed it
+must run on a slow timer or off the drive loop entirely, never once per pass.
+
+### Switching the handheld between BLE and Wi-Fi
+
+Two bugs used to make this require a power cycle, both fixed 2026-08-06:
+
+- **The listener was bound once, inside a blocking window.** If the Wi-Fi association had
+  not completed within `enterWifi()`'s 9 s wait, the sockets were never opened *at all*, and
+  a window that associated a moment later sat fully connected and deaf for its whole dwell.
+  Nothing retried it. `ensureWifiListening()` is now idempotent and runs from the poll loop,
+  so a late association is picked up within milliseconds. "Associated" and "listening" are
+  different states.
+- **The sticky preference never decayed.** After pairing over BLE it gave BLE 15 s windows
+  and Wi-Fi only 4 s — and that 4 s had to cover a possibly-slow reconnect *before* any
+  listening began. The preference votes for whatever worked **last** time, but the usual
+  reason a link stops is that the operator moved the handheld to the **other** transport.
+  It now stops applying after `SEARCH_FAIR_AFTER` fruitless windows and both transports get
+  the full dwell. (This is also why a power cycle "fixed" it: reset cleared `preferBle`.)
+
+### The stall detector
+
+Any loop pass slower than `STALL_WARN_MS` (300 ms) logs `[stall] loop blocked N ms`.
+Anything over `FAILSAFE_MS` drops the link, so this makes such a fault self-reporting rather
+than something to infer from mysterious unpairs — it is what found the TCP problem in one
+run. Transport hand-offs legitimately block for seconds and stop the motors first, so
+`gotoState()` clears the reference and they are not reported.

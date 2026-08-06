@@ -65,6 +65,49 @@ receiver that fights the transmitter it is trying to hear.
 `ENABLE_BLE 0` builds Wi-Fi-only with no ArduinoBLE dependency. BLE needs a working
 ESP32-S3 modem firmware on the R4 — see the power-cycle note below before suspecting it.
 
+### NEVER call `WiFiServer::available()` from the drive loop — it blocks ~10 s
+
+WiFiS3's `WiFiServer::available()` is a **synchronous modem round-trip** that performs the
+`accept` on the ESP32-S3. With no client pending it waits out the modem's timeout —
+**measured at ~10.1 s on this board, on every loop pass**. That is 14x `FAILSAFE_MS`.
+
+The symptom is not "TCP is slow", it is "Wi-Fi is unusable": the drive loop stops for 10 s,
+the link goes stale, the rover stops, unpairs, re-pairs on the next buffered datagram, and
+repeats 10 s later. It was found in one run by the stall detector after being mistakenly
+blamed on the INA219 probe — which the same instrumentation cleared at 100 ms.
+
+`ENABLE_TCP` is therefore **0** by default. `TcpParser` is kept and is still correct; it is
+the *polling* that is unaffordable. If TCP is ever wanted, poll it on a slow timer or off
+the drive loop — never per pass.
+
+### The stall detector is load-bearing, not debug scaffolding
+
+Any loop pass slower than `STALL_WARN_MS` logs `[stall] loop blocked N ms`. Anything over
+`FAILSAFE_MS` silently drops the link, and this class of bug is otherwise diagnosed only by
+guesswork — the TCP stall above was blamed on the battery probe until this measured both.
+`gotoState()` clears `stallRefMs` so transport hand-offs, which legitimately block for
+seconds *and stop the motors first*, are not reported; if everything is reported it becomes
+noise nobody reads. Keep it.
+
+### Bind sockets idempotently; "associated" != "listening"
+
+`enterWifi()` used to bind the sockets once, inside its 9 s association wait. If the
+association had not landed by then the sockets were never opened at all, and a window that
+associated a moment later sat fully connected and **deaf** for its entire dwell, with
+nothing retrying. Coming off `BLE.end()` the modem can easily need longer than 9 s.
+`ensureWifiListening()` is now idempotent and called from `pollWifiFrames()` every pass.
+
+### The sticky search preference must DECAY
+
+`preferBle` biases the search toward whatever paired last — which is right for a brief
+dropout on the same transport, and wrong for the most common case, the operator moving the
+handheld to the **other** transport. Held indefinitely it gave the departed transport 15 s
+windows and the live one 4 s, and that 4 s had to cover a slow reconnect before any
+listening began; switching the N1 from BLE to UDP then never reconnected until the R4 was
+power-cycled (which is exactly what "fixed" it — reset cleared `preferBle`). After
+`SEARCH_FAIR_AFTER` fruitless windows the preference stops applying and both transports get
+the full dwell.
+
 ### The aux axis convention belongs to the PROTOCOL — never compensate here
 
 NessoLink **1.1.2** specifies it normatively: every axis in the frame, motors and aux
@@ -364,9 +407,14 @@ Since confirmed on the rover: all four motors; the wheel-test corner mapping; th
 directions; `VX_SIGN`; forward, reverse, rotate and strafe; mode changes; the LED matrix
 indicators; and the battery gauge on pack power.
 
-Not confirmed: the **Wi-Fi UDP/TCP frame path** — all driving so far has been over BLE, so
-`pollWifiFrames()`, the source-lock and `TcpParser`'s re-assembly have never handled a real
-N1 frame.
+Wi-Fi **UDP** is now confirmed too: paired as `>>> PAIRED via UDP`, held the link for the
+whole stream and dropped cleanly only when it stopped, verified with
+`examples/Nesso_R4_Receiver/tools/nesso_tx.py --pattern idle` (centred sticks, so it
+exercises decode and pairing without commanding any motion — the right tool for a bench
+test with the motors wired).
+
+Not confirmed: TCP framing end-to-end (`ENABLE_TCP` is off by design), and the throttle lock
+and aux-stick strafe as distinct gestures.
 
 **`[batt] no sensor` on USB is expected, not a fault** — the UPS is switched off whenever
 USB is connected, so the INA219 is unpowered. `pollBattery()` re-probes every

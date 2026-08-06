@@ -40,6 +40,15 @@
  */
 
 #define ENABLE_BLE 1        // 0 = Wi-Fi only (no ArduinoBLE needed)
+// TCP is OFF by default and should stay that way unless something actually needs it.
+// WiFiS3's `WiFiServer::available()` is a SYNCHRONOUS modem round-trip that performs the
+// accept on the ESP32-S3, so with no pending client it waits out the modem's timeout —
+// **measured at ~10.1 s on this board**, on every single loop pass. That is 14x
+// FAILSAFE_MS, so the rover stops, unpairs, re-pairs on the next buffered datagram and
+// does it again 10 s later: with TCP polling on, a UDP link is unusable. The N1's Wi-Fi
+// mode is UDP anyway. If TCP is ever needed it must be polled on a slow timer, or moved
+// off the drive loop entirely — never called per pass.
+#define ENABLE_TCP 0
 
 #include "WiFiS3.h"
 #include "Arduino_LED_Matrix.h"
@@ -74,6 +83,20 @@ const char*    BLE_TX_UUID  = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 #define SEARCH_PREFER_BLE 0             // cold-boot preference (0 = Wi-Fi first)
 const uint32_t SEARCH_LONG_MS  = 15000; // dwell on the preferred transport
 const uint32_t SEARCH_SHORT_MS = 4000;  // brief probe of the other transport
+// Fruitless search windows after which the preference stops applying and BOTH transports
+// get the long dwell. 2 = one full alternation: the preferred transport has had its long
+// window and the other its short probe, and neither produced a frame — so the preference
+// is now evidence about the past, not about where the remote is. See searchWindowMs().
+const uint8_t  SEARCH_FAIR_AFTER = 2;
+// Log any loop iteration slower than this. Sized below FAILSAFE_MS so a stall is reported
+// before it is long enough to have dropped the link.
+const uint32_t STALL_WARN_MS = 300;
+// Reference for the stall detector, cleared by gotoState() so a transport hand-off is not
+// reported: those legitimately block for seconds (enterWifi() waits on association, a
+// failed BLE.begin() waits out the modem) and stop the motors FIRST, so they cost nothing
+// the detector exists to catch. Only unexplained stalls should reach the log, or it becomes
+// noise nobody reads.
+uint32_t stallRefMs = 0;
 // Paired: no valid frame for this long -> treat the link as dead and stop the rover.
 // This is quali_base's REMOTE_TIMEOUT (600 ms) rounded to the receiver's own 700 ms
 // failsafe so the motors and the "no signal" display agree on when the link is gone.
@@ -383,7 +406,25 @@ uint32_t  lastFrameMs    = 0;
 bool      preferBle      = SEARCH_PREFER_BLE;  // sticky: follows the last transport that paired
 
 // Length of the current search window — the preferred transport dwells longer.
+// Search windows completed since the last successful pair. Resets in acceptFrame().
+uint8_t searchRounds = 0;
+
 uint32_t searchWindowMs() {
+  // THE PREFERENCE DECAYS. It is a tie-breaker for the first couple of windows, not a
+  // standing bias — because the thing it is biased toward is whatever worked LAST time,
+  // and the most common reason a paired link stops is that the operator moved the handheld
+  // to the OTHER transport. Held indefinitely, the preference then votes for the transport
+  // that just went away: after pairing over BLE it gave BLE 15 s and Wi-Fi only 4 s, and
+  // that 4 s had to cover a possibly-slow reconnect before any listening could happen.
+  // Observed on hardware 2026-08-06 — switching the N1 from BLE to Wi-Fi UDP did not
+  // reconnect at all until the R4 was power-cycled (which cleared preferBle to its
+  // cold-boot default).
+  //
+  // So once both transports have had their turn and neither produced a frame, stop
+  // favouring and give each a full window. The fast re-pair on the usual transport is
+  // preserved for the case it is meant for — a brief dropout on the SAME transport, which
+  // is resolved inside the first window or two.
+  if (searchRounds >= SEARCH_FAIR_AFTER) return SEARCH_LONG_MS;
   bool onWifi = (linkState == SEARCH_WIFI);
   return (onWifi != preferBle) ? SEARCH_LONG_MS : SEARCH_SHORT_MS;   // preferred -> long
 }
@@ -685,7 +726,16 @@ void pollBattery(uint32_t now) {
     reportBattery(now);                   // keep saying we are blind
     if (now - lastRetry < BATT_RETRY_MS) return;
     lastRetry = now;
-    if (!ina.begin()) { battState = -1; return; }
+    // Timed: an I2C probe of an ABSENT device can block on bus timeouts, and anything that
+    // blocks longer than FAILSAFE_MS silently drops the radio link. Reported so a stall is
+    // visible rather than inferred from mysterious unpairs.
+    uint32_t probeT0 = millis();
+    bool probeOk = ina.begin();
+    uint32_t probeMs = millis() - probeT0;
+    if (probeMs > 50) {
+      Serial.print("[batt] probe blocked "); Serial.print(probeMs); Serial.println(" ms");
+    }
+    if (!probeOk) { battState = -1; return; }
     battReady = true;
     resetBattCounters();                  // a confirmation streak must not span a data gap
     Serial.println("[batt] INA219 @ 0x41 online");
@@ -764,8 +814,9 @@ void acceptFrame(const NessoFrame& f, IPAddress origin, bool viaBle, const char*
   }
 
   if (searching) {
-    preferBle = viaBle;      // sticky: bias future searches to whatever just worked
-    boundIp   = origin;
+    preferBle    = viaBle;   // sticky: bias future searches to whatever just worked...
+    searchRounds = 0;        // ...but only until it has been given a fair chance and failed
+    boundIp      = origin;
     if (origin != IPAddress(0, 0, 0, 0))
       snprintf(pairLabel, sizeof(pairLabel), "%s %d.%d.%d.%d", kind,
                origin[0], origin[1], origin[2], origin[3]);
@@ -787,7 +838,10 @@ void acceptFrame(const NessoFrame& f, IPAddress origin, bool viaBle, const char*
 }
 
 // ── TCP stream reassembly (TCP has no packet boundaries) ──────────────────────
-// Resynchronises on the 0xA5 magic and uses the version byte for the length.
+// Resynchronises on the 0xA5 magic and uses the version byte for the length. Kept compiled
+// out by default — see ENABLE_TCP at the top for why. The re-assembly logic is correct and
+// worth preserving; it is the *polling* that is unaffordable.
+#if ENABLE_TCP
 struct TcpParser {
   uint8_t buf[96];
   int     n = 0;
@@ -815,11 +869,42 @@ struct TcpParser {
     }
   }
 };
+#endif
 
 // ── Wi-Fi transport ───────────────────────────────────────────────────────────
 WiFiUDP    udp;
+#if ENABLE_TCP
 WiFiServer tcpServer(TCP_PORT);
 TcpParser  tcpParser;
+#endif
+
+bool udpListening = false;   // the sockets are OPEN — not merely "Wi-Fi associated"
+
+// Open the listening sockets, idempotently. Split out of enterWifi() and retried from
+// pollWifiFrames() every pass, because binding them ONCE inside enterWifi()'s blocking
+// window was a silent single point of failure: if the association had not completed within
+// those 9 seconds the sockets were never opened AT ALL, and a Wi-Fi window that associated
+// a moment later then sat fully connected and deaf for its entire dwell. Nothing retried
+// it — the next window simply re-ran the same 9-second gamble. Coming straight off
+// BLE.end() the modem can need longer than 9 s, which is how a handheld switched from BLE
+// to Wi-Fi UDP could fail to reconnect indefinitely (observed 2026-08-06; only a power
+// cycle cleared it). "Associated" and "listening" are different states, and conflating them
+// is what hid this.
+void ensureWifiListening() {
+  if (udpListening) return;
+  if (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) return;
+  udp.begin(UDP_PORT);
+#if ENABLE_TCP
+  tcpServer.begin();
+  tcpParser.clear();
+#endif
+  udpListening = true;
+  Serial.print("[wifi] listening UDP:"); Serial.print(UDP_PORT);
+#if ENABLE_TCP
+  Serial.print(" TCP:"); Serial.print(TCP_PORT);
+#endif
+  Serial.print(" as "); Serial.println(WiFi.localIP());
+}
 
 void enterWifi() {
   Serial.print("[wifi] connecting to "); Serial.print(WIFI_SSID); Serial.print(' ');
@@ -831,23 +916,24 @@ void enterWifi() {
     delay(200);
     Serial.print('.');
   }
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("\n[wifi] IP "); Serial.println(WiFi.localIP());
-    udp.begin(UDP_PORT);
-    tcpServer.begin();
-    tcpParser.clear();
-  } else {
-    Serial.println("\n[wifi] no connection (will fall back to BLE if enabled)");
-  }
+  Serial.println();
+  // Not fatal if the association has not landed: the poll loop picks it up as soon as it
+  // does, so a slow modem costs some latency rather than the whole window.
+  ensureWifiListening();
+  if (!udpListening)
+    Serial.println("[wifi] not associated yet - will keep trying inside this window");
 }
 
 void exitWifi() {
   udp.stop();
   WiFi.disconnect();
   WiFi.end();
+  udpListening = false;
 }
 
 void pollWifiFrames() {
+  ensureWifiListening();            // no-op once bound; recovers a late association
+  if (!udpListening) return;
   int sz = udp.parsePacket();                              // UDP
   if (sz > 0) {
     IPAddress src = udp.remoteIP();
@@ -862,6 +948,8 @@ void pollWifiFrames() {
       Serial.print(src); Serial.println(" - not a valid frame");
     }
   }
+#if ENABLE_TCP
+  // WARNING: this call blocks ~10 s per pass with no pending client. See ENABLE_TCP.
   WiFiClient client = tcpServer.available();               // TCP
   if (client) {
     uint8_t tmp[64];
@@ -869,6 +957,7 @@ void pollWifiFrames() {
     while (a-- > 0 && i < (int)sizeof(tmp)) { int c = client.read(); if (c < 0) break; tmp[i++] = (uint8_t)c; }
     if (i > 0) tcpParser.feed(tmp, i);
   }
+#endif
 }
 
 // ── BLE transport (central -> NESSO peripheral) ───────────────────────────────
@@ -964,6 +1053,7 @@ static inline bool isWifiDomain(LinkState s) { return s == SEARCH_WIFI || s == P
 
 void gotoState(LinkState ns) {
   stopMotors();       // FIRST: a transport swap takes the radio down for seconds
+  stallRefMs = 0;     // this hand-off's blocking is expected; don't report it as a stall
   bool wasWifi = isWifiDomain(linkState), willWifi = isWifiDomain(ns);
   if (wasWifi && !willWifi)      { exitWifi(); enterBle(); }
   else if (!wasWifi && willWifi) { exitBle();  enterWifi(); }
@@ -989,7 +1079,9 @@ void heartbeat() {
     uint32_t win     = searchWindowMs();
     uint32_t leftS   = elapsed < win ? (win - elapsed) / 1000 : 0;
     Serial.print("[search] WiFi - listening UDP:"); Serial.print(UDP_PORT);
+#if ENABLE_TCP
     Serial.print(" TCP:"); Serial.print(TCP_PORT);
+#endif
     Serial.print(" as "); Serial.print(WiFi.localIP());
     Serial.print(". "); Serial.print(leftS); Serial.println("s left");
   } else {
@@ -1300,6 +1392,16 @@ void loop() {
   // stateEnteredMs (set by acceptFrame too), which is why one timestamp covers both.
   uint32_t now = millis();
 
+  // STALL DETECTOR. Anything that blocks loop() for longer than FAILSAFE_MS drops the link
+  // without explanation, so make it self-reporting instead of a mystery. Transport
+  // hand-offs legitimately block for seconds and stop the motors first, so they are
+  // excluded by gotoState() resetting the reference.
+  if (stallRefMs && (uint32_t)(now - stallRefMs) > STALL_WARN_MS) {
+    Serial.print("[stall] loop blocked "); Serial.print(now - stallRefMs);
+    Serial.println(" ms - link may drop");
+  }
+  stallRefMs = now;
+
   // Battery is polled outside the drive tick: it is rate-limited internally to 1 Hz and
   // its I2C transaction is short, so it costs nothing here and keeps sampling while the
   // link is down — which is exactly when a pack is most likely to be running flat.
@@ -1343,8 +1445,12 @@ void loop() {
     // leaves the next BLE window to retry, so a transient failure costs one hand-off
     // rather than every other search window.
     if (linkState == SEARCH_BLE && !bleBegunDbg()) gotoState(SEARCH_WIFI);
-    else if (now - stateEnteredMs > searchWindowMs())
+    else if (now - stateEnteredMs > searchWindowMs()) {
+      // This window produced no frame. Count it: once both transports have had a turn the
+      // preference stops applying and each gets a full dwell (see searchWindowMs()).
+      if (searchRounds < 255) searchRounds++;
       gotoState(linkState == SEARCH_WIFI ? SEARCH_BLE : SEARCH_WIFI);
+    }
 #else
     // Wi-Fi-only: if the connect failed (no IP), keep retrying until it lands — there is
     // no BLE phase to fall through to that would otherwise re-enter Wi-Fi.
