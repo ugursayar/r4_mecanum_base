@@ -7,11 +7,11 @@ Wi-Fi (UDP + TCP) and Bluetooth LE** and auto-pairing with whichever remote spea
 The drive logic is a port of [`quali_base`](../quali_base) — the same chassis running on
 an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
 
-> **Calibrated and driving on hardware 2026-08-06.** `MOTORS[]` order, the `inv` flags and
-> `VX_SIGN` are all **measured** — see **Bring-up**. Confirmed on the rover: BLE pairing and
-> sustained link, Wi-Fi **UDP** pairing and sustained link, all four motors, forward /
-> reverse / rotate / strafe, mode changes, the LED matrix indicators, and the battery gauge
-> on pack power.
+> **Calibrated and verified on hardware 2026-08-06.** `MOTORS[]` order, the `inv` flags and
+> `VX_SIGN` are all **measured** — see **Bring-up**. Confirmed on the rover with a real
+> Nesso N1: pairing and sustained link over **both BLE and Wi-Fi UDP**, **switching between
+> the two transports live** with no power cycle, all four motors, forward / reverse / rotate
+> / strafe, mode changes, the LED matrix indicators, and the battery gauge on pack power.
 >
 > `[batt] no sensor` on a USB-powered run is **expected, not a fault**: the UPS is switched
 > off while USB is connected, so the INA219 is unpowered. It is re-probed every 5 s and
@@ -340,7 +340,8 @@ must run on a slow timer or off the drive loop entirely, never once per pass.
 
 ### Switching the handheld between BLE and Wi-Fi
 
-Two bugs used to make this require a power cycle, both fixed 2026-08-06:
+**Verified on the real N1 2026-08-06: switching either direction re-pairs on its own, with
+no power cycle.** Two bugs used to make it require one, both fixed:
 
 - **The listener was bound once, inside a blocking window.** If the Wi-Fi association had
   not completed within `enterWifi()`'s 9 s wait, the sockets were never opened *at all*, and

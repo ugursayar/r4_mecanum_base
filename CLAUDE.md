@@ -407,11 +407,13 @@ Since confirmed on the rover: all four motors; the wheel-test corner mapping; th
 directions; `VX_SIGN`; forward, reverse, rotate and strafe; mode changes; the LED matrix
 indicators; and the battery gauge on pack power.
 
-Wi-Fi **UDP** is now confirmed too: paired as `>>> PAIRED via UDP`, held the link for the
-whole stream and dropped cleanly only when it stopped, verified with
-`examples/Nesso_R4_Receiver/tools/nesso_tx.py --pattern idle` (centred sticks, so it
-exercises decode and pairing without commanding any motion — the right tool for a bench
-test with the motors wired).
+Wi-Fi **UDP** is confirmed too, twice over. First on the bench with
+`examples/Nesso_R4_Receiver/tools/nesso_tx.py --pattern idle` — centred sticks, so it
+exercises decode and pairing without commanding any motion, which is the right tool once the
+motors are wired: it paired as `>>> PAIRED via UDP`, held the link for the whole stream and
+dropped cleanly only when the stream stopped. Then with the real N1, including **switching
+live between BLE and Wi-Fi UDP in both directions with no power cycle** — the case the three
+fixes above exist for.
 
 Not confirmed: TCP framing end-to-end (`ENABLE_TCP` is off by design), and the throttle lock
 and aux-stick strafe as distinct gestures.
