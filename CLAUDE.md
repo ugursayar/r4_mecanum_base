@@ -126,6 +126,24 @@ A0/A1/A2 as plain digital outputs.
 
 ### `MOTORS[]` order is geometry; `inv` and `VX_SIGN` are bench facts
 
+**Calibrated 2026-08-06 — `MOTORS[]` order and `inv` are now MEASURED.** The wheel test
+drove the corner the matrix lit in every slot (order confirmed), and only front-right ran
+backwards, giving `inv = {true, true, false, false}`: the whole left side inverted, the
+whole right side not. That symmetry is the expected result for a chassis whose sides are
+mirrored by mounting with every motor conventionally terminated, so it corroborates itself.
+**`VX_SIGN` remains unverified** — strafe has not been driven.
+
+The pin map is byte-for-byte quali_base's, deliberately, so the same chassis and harness
+move between the Uno Q and the R4 with nothing re-terminated. The one table divergence is
+front-right's `inv`: quali_base needs it inverted because *its* front-right leads are
+terminated backwards on OUT3/OUT4, and that cable was re-terminated on this build. `inv`
+belongs to the MOTOR, not the slot, so it correctly does not travel with the pin map.
+
+**`D13` IS the built-in LED on the R4** (`PIN_LED = 13`, P102) — it is not on the Uno Q, and
+quali_base's comment says so. D13 is front-left's second direction pin here, so the onboard
+LED mirrors that motor's direction bit. Cosmetic, but it is no longer a status light.
+
+
 Array order is `{FL, RL, FR, RR}` and must stay that way — `drive4()` indexes it
 positionally and the mix assigns a different expression to each corner. Reordering silently
 turns a strafe into a spin.

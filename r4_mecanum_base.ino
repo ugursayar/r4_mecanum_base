@@ -92,16 +92,26 @@ ArduinoLEDMatrix matrix;
 // One driver module per axle so the high-current leads stay short; the logic runs are
 // the long ones, which is harmless at this PWM rate.
 //
-// Pin choice is constrained by the R4 WiFi's timers and its reserved pins:
-//   * analogWrite() is only PWM on D3 D5 D6 D9 D10 D11 — on every other pin the core
-//     falls back to a 0/1 digital write, so the four EN pins MUST come from that set.
-//     EN takes D3 D5 D6 D9 and leaves D10/D11 free for SPI.
-//   * D0/D1 are Serial1, D13 is the built-in LED, A4/A5 are I2C (SDA/SCL) — all four
-//     avoided. A4/A5 in particular are kept free so the INA219 pack monitor from
-//     quali_base can be added without moving a motor pin.
-//   * Direction pins need no PWM, so they take the non-PWM digitals D2 D4 D7 D8 D12
-//     and the analog headers A0 A1 A2 (plain digital outputs here; A0 doubles as the
-//     DAC, which we do not use).
+// PIN MAP IS IDENTICAL TO quali_base's. That is deliberate and worth keeping: the same
+// chassis and the same motor harness can be moved between the Uno Q and this board without
+// re-terminating anything, and the two sketches' MOTORS[] tables can be read against each
+// other line for line. Verified pin-by-pin against the R4 core before adopting:
+//   * analogWrite() is only PWM on D3 D5 D6 D9 D10 D11 (confirmed in the UNOWIFIR4
+//     variant's initVariant()) — on every other pin the core silently degrades it to a 0/1
+//     digital write, so the four EN pins MUST come from that set. EN sits on
+//     D5 D6 D9 D10, all four of which qualify.
+//   * D0/D1 (Serial1) and A4/A5 (I2C) are untouched. A4/A5 carry the INA219 pack monitor.
+//   * D10-D13 are the SPI bus and D3/D11 are PWM-capable; all are used as plain GPIO here.
+//     Nothing on this board needs SPI, and spending a PWM-capable pin on a direction line
+//     costs nothing.
+//
+// ONE R4-SPECIFIC DIFFERENCE, and the only place this map behaves unlike it does on the
+// Uno Q: **D13 IS the built-in LED here** (PIN_LED = 13, port P102), whereas quali_base's
+// note records that D13 is *not* the onboard LED on an Uno Q. D13 is front-left's second
+// direction pin, so the onboard LED now mirrors front-left's direction bit. That is
+// cosmetic — the L298N input is high-impedance and the LED sits in parallel — but do not
+// read that LED as a status light any more. The variant drives D13 LOW in initVariant()
+// before setup() runs, so it boots to a defined state.
 //
 // Array order is {FL, RL, FR, RR} and must stay that way: drive4() indexes it
 // positionally and the mecanum mix assigns a different expression to each corner.
@@ -128,11 +138,38 @@ ArduinoLEDMatrix matrix;
 //   3. Only then check strafe, and if it goes the wrong way flip VX_SIGN — not `inv`,
 //      which is by now calibrated for forward motion and would break driving straight.
 struct Motor { uint8_t in1, in2, en; bool inv; };
+// AS ACTUALLY BUILT (wiring confirmed 2026-08-06), and byte-for-byte quali_base's table.
+// **L298N#1 = REAR pair, L298N#2 = FRONT pair** — each module sits next to the motors it
+// drives, so the high-current leads stay short and only the logic runs are long, which is
+// harmless at this PWM rate.
+//
+// The two modules have OPPOSITE channel conventions: the REAR module is ch A = LEFT /
+// ch B = RIGHT, but the FRONT module is ch A = RIGHT / ch B = LEFT. That is why the front
+// pair below looks transposed against the rear pair — it is the wiring, not a slip.
+//
+// `inv` MEASURED on this build 2026-08-06 with MODE_WHEELTEST: all four wheels drove the
+// corner the matrix lit (so the array order above is confirmed, and strafe has a correct
+// foundation), and all four ran forward except front-right, which was flipped.
+//
+// The result is the clean symmetric case — the whole LEFT side inverted, the whole RIGHT
+// side not — which is what a chassis whose sides are MIRRORED by mounting should give when
+// every motor is conventionally terminated. Identical wiring spins mirrored motors in
+// opposite *rover* directions, so one whole side must be inverted for the rover to track
+// straight; four wheels turning the same absolute direction is the wrong state, not the
+// right one.
+//
+// This is the one place the table DIVERGES from quali_base, which needs front-right
+// inverted too. That is not a difference in the chassis or the mix: quali_base's
+// front-right leads are terminated the other way round on OUT3/OUT4 relative to its other
+// three, and that cable was re-terminated on this build before the R4 went in. `inv`
+// belongs to the MOTOR, not the slot — it encodes how these leads are screwed into these
+// terminals — so it does not travel with the pin map. If leads are ever re-terminated
+// again, re-derive from a wheel test rather than stacking another inversion on top.
 Motor MOTORS[4] = {
-  {12, A0, 6, true },  // front-left   L298N#2(front)-A: IN1=D12, IN2=A0, ENA=D6 (~)
-  { 2,  4, 3, true },  // rear-left    L298N#1(rear) -A: IN1=D2,  IN2=D4, ENA=D3 (~)
-  {A1, A2, 9, false},  // front-right  L298N#2(front)-B: IN3=A1,  IN4=A2, ENB=D9 (~)
-  { 7,  8, 5, false},  // rear-right   L298N#1(rear) -B: IN3=D7,  IN4=D8, ENB=D5 (~)
+  {12, 13, 10, true },  // front-left   L298N#2(front)-B: IN3=D12, IN4=D13, ENB=D10 (~)
+  { 2,  3,  5, true },  // rear-left    L298N#1(rear) -A: IN1=D2,  IN2=D3,  ENA=D5  (~)
+  { 8, 11,  9, false},  // front-right  L298N#2(front)-A: IN1=D8,  IN2=D11, ENA=D9  (~)
+  { 4,  7,  6, false},  // rear-right   L298N#1(rear) -B: IN3=D4,  IN4=D7,  ENB=D6  (~)
 };
 
 // Sign of the strafe axis as the CHASSIS sees it. The mecanum mix below assumes the
@@ -224,8 +261,24 @@ const uint8_t MODE_CYCLE_COUNT = 2;      // DRIVE, STRAFE — the click cycle, a
 // ~10 Hz, so the threshold is never decided by one lucky frame.
 const uint32_t LONGPRESS_MS  = 800;
 const int      WHEELTEST_PWM = 200;      // pre-stallComp; brisk enough to be unmistakable
-const uint32_t WHEELTEST_MS  = 2000;     // dwell per wheel
-uint8_t driveMode = MODE_DRIVE;          // set to MODE_WHEELTEST + reflash for bring-up
+// Each wheel gets a SLOT, of which it spins for the first part and the rover is completely
+// still for the rest. The gap is not padding — it is what makes "one wheel at a time"
+// legible: without it you are watching for the moment one wheel stops and the next starts,
+// and between FL and RL (both on the same side, a hand's width apart) that is exactly the
+// distinction the test exists to resolve. With a still gap you count four unambiguous
+// events instead.
+const uint32_t WHEELTEST_MS      = 2000; // slot per wheel
+const uint32_t WHEELTEST_SPIN_MS = 1400; // ...of which this much is spinning
+const char*    WHEEL_NAMES[4] = { "FL front-left", "RL rear-left",
+                                  "FR front-right", "RR rear-right" };
+// Boot straight into the wheel-identification test. This is the ONLY way in — the test has
+// no gesture on purpose, because it ignores both sticks and spins wheels on a timer, so
+// landing on it mid-drive would mean the rover moves off with the sticks centred. A bench
+// diagnostic you need after rewiring should cost a reflash, not a slip of the thumb. One
+// click of the stick button leaves it for DRIVE (it is an off-cycle mode), so a paired
+// remote can still escape without reflashing.
+#define START_IN_WHEELTEST 0
+uint8_t driveMode = START_IN_WHEELTEST ? MODE_WHEELTEST : MODE_DRIVE;
 const NessoButton MODE_BUTTON = NESSO_BTN_STICK;   // click / hold — see above
 
 // ── Throttle lock ─────────────────────────────────────────────────────────────
@@ -1060,19 +1113,55 @@ void driveTick(bool linkFresh, uint32_t now) {
   for (int i = 0; i < 4; i++) if (abs(wheel[i]) > mx) mx = abs(wheel[i]);
   if (mx > 255) for (int i = 0; i < 4; i++) wheel[i] = wheel[i] * 255 / mx;
 
-  // Wheel identification overrides the mix entirely (the stick is ignored). Runs with or
-  // without a link: it is a bench diagnostic, not a driving mode.
+  // Wheel identification overrides the mix entirely (both sticks are ignored). Runs with or
+  // without a link: it is a bench diagnostic, not a driving mode. Drives each wheel FORWARD
+  // in MOTORS[] index order — {FL, RL, FR, RR} — one at a time, so the test answers two
+  // questions at once: WHICH corner an index actually drives (compare against the lit
+  // matrix quadrant), and whether that corner's `inv` flag is right (does it go forward).
   int testIdx = -1;
   if (driveMode == MODE_WHEELTEST) {
-    testIdx = (int)((now / WHEELTEST_MS) % 4);
-    for (int i = 0; i < 4; i++) wheel[i] = (i == testIdx) ? WHEELTEST_PWM : 0;
+    uint32_t slot = (now / WHEELTEST_MS) % 4;
+    bool     spin = (now % WHEELTEST_MS) < WHEELTEST_SPIN_MS;
+    testIdx = (int)slot;
+    for (int i = 0; i < 4; i++)
+      wheel[i] = (spin && i == (int)slot) ? WHEELTEST_PWM : 0;
   }
 
   // Ramp each wheel toward its target (smooth accel/brake; avoids instant full reversals
   // and the current spikes that come with them). Matrix and motors both come from the
   // same ramped values.
-  for (int i = 0; i < 4; i++) curPwm[i] = slew(curPwm[i], stallComp(wheel[i]));
+  //
+  // The wheel test BYPASSES the ramp, and must. The limiter moves every wheel at most
+  // SLEW_STEP per tick, so at a slot boundary the outgoing wheel is still winding down
+  // (~350 ms) while the incoming one winds up — two wheels turning at once, in a test whose
+  // entire purpose is that exactly one does. A diagnostic that cannot keep its own promise
+  // is worse than none, and there is nothing to protect here anyway: it is one unloaded
+  // wheel going from 0 to one direction, never a reversal.
+  for (int i = 0; i < 4; i++) {
+    int target = stallComp(wheel[i]);
+    curPwm[i]  = (testIdx >= 0) ? target : slew(curPwm[i], target);
+  }
   drive4(curPwm);
+
+  // Announce each slot once, naming the corner the code BELIEVES it is driving, so the
+  // serial log is a record of the mapping evidence rather than something you have to be
+  // watching the panel to interpret.
+  if (testIdx >= 0) {
+    static int lastSlot = -1;
+    static bool lastSpin = false;
+    bool spinning = curPwm[testIdx] != 0;
+    if (testIdx != lastSlot || spinning != lastSpin) {
+      if (spinning) {
+        Serial.print("[wheeltest] "); Serial.print(testIdx);
+        Serial.print(" -> "); Serial.print(WHEEL_NAMES[testIdx]);
+        Serial.print("  forward @"); Serial.print(curPwm[testIdx]);
+        Serial.println(" - watch which wheel turns, and which way");
+      } else {
+        Serial.println("[wheeltest] (all stopped)");
+      }
+      lastSlot = testIdx; lastSpin = spinning;
+    }
+  }
 
   // Report on change, so the serial log shows what was commanded without a running
   // stream. The large-per-wheel-change trigger is there to settle the "is this veer
@@ -1090,8 +1179,12 @@ void driveTick(bool linkFresh, uint32_t now) {
   // The lock is in the change trigger as well as the payload: it takes an axis away, so it
   // must appear in the log at the moment it happens rather than being inferred later from
   // a throttle that never moves.
-  if (dir != lastDir || linkFresh != lastFresh || driveMode != lastMode
-      || throttleLock != lastLock || wheelJumped) {
+  //
+  // Suppressed during the wheel test: [wheeltest] above already reports every slot, and
+  // says which corner it believes it is driving, which is the whole point. Two lines per
+  // transition would just make the mapping evidence harder to read.
+  if (testIdx < 0 && (dir != lastDir || linkFresh != lastFresh || driveMode != lastMode
+      || throttleLock != lastLock || wheelJumped)) {
     Serial.print("[drive] "); Serial.print(dir);
     Serial.print(" mode="); Serial.print(driveMode);
     if (throttleLock) Serial.print(" LOCK");

@@ -7,13 +7,13 @@ Wi-Fi (UDP + TCP) and Bluetooth LE** and auto-pairing with whichever remote spea
 The drive logic is a port of [`quali_base`](../quali_base) — the same chassis running on
 an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
 
-> **Link verified on hardware 2026-08-06; drive output verified only as numbers.** BLE
-> pairing with a Nesso N1, sustained link, frame decode and the mix for forward/reverse/
-> rotate were all confirmed over serial. **No motor has turned yet** — strafe, the mode
-> gestures, the throttle lock and `MODE_WHEELTEST` are still unexercised, and the `inv`
-> flags and `VX_SIGN` remain a starting guess. The INA219 pack monitor is wired in but has
-> not yet seen a sensor (`[batt] no sensor`). See **Bring-up** before applying power to the
-> L298Ns.
+> **Motors calibrated on hardware 2026-08-06.** `MOTORS[]` order and the `inv` flags are
+> now **measured**, not guessed: every wheel-test slot drove the corner the matrix lit, and
+> all four wheels run forward. BLE pairing, sustained link, frame decode and the mix for
+> forward/reverse/rotate were confirmed earlier over serial.
+>
+> Still outstanding: **`VX_SIGN` (strafe direction) is unverified** — see step 3 of
+> **Bring-up**. The INA219 has not yet answered on A4/A5 (`[batt] no sensor`).
 
 Engineering notes and traps are in [CLAUDE.md](CLAUDE.md).
 
@@ -99,34 +99,58 @@ It does not survive a mode change, and a click always clears it in one step.
 
 Two L298N modules, one per axle, so the high-current leads stay short.
 
-| corner | IN1 | IN2 | EN (PWM) | module |
+| wheel | module, channel | IN a | IN b | EN (PWM) |
 |---|---|---|---|---|
-| front-left  | D12 | A0 | **D6** | #2 (front) A |
-| rear-left   | D2  | D4 | **D3** | #1 (rear) A |
-| front-right | A1  | A2 | **D9** | #2 (front) B |
-| rear-right  | D7  | D8 | **D5** | #1 (rear) B |
+| front-left  | #2 (front), **B** | D12 | D13 | **~D10** |
+| rear-left   | #1 (rear), **A**  | D2  | D3  | **~D5**  |
+| front-right | #2 (front), **A** | D8  | D11 | **~D9**  |
+| rear-right  | #1 (rear), **B**  | D4  | D7  | **~D6**  |
 
-`analogWrite()` is only real PWM on **D3 D5 D6 D9 D10 D11** on this board — on any other
-pin the core degrades it to a 0/1 digital write, so the four EN pins must come from that
-set. D0/D1 (Serial1), D13 (built-in LED) and **A4/A5 (I2C)** are deliberately left alone;
-**A4/A5 carry the UPS_3S INA219** (address 0x41) and must stay off the motor map.
-D10/D11 stay free for SPI.
+**This is byte-for-byte quali_base's pin map**, deliberately: the same chassis and motor
+harness move between the Uno Q and the R4 with nothing re-terminated, and the two sketches'
+`MOTORS[]` tables read against each other line for line.
+
+The two modules have **opposite channel conventions** — the rear is `A = left, B = right`
+but the front is `A = right, B = left`. That is why the front pair looks transposed against
+the rear in `MOTORS[]`; it is the wiring, not a slip.
+
+> **One R4-specific difference: `D13` *is* the built-in LED here** (`PIN_LED = 13`, port
+> P102), whereas on the Uno Q it is not. D13 is front-left's second direction pin, so the
+> onboard LED mirrors that motor's direction bit — cosmetic (the L298N input is
+> high-impedance), but don't read that LED as a status light. The variant drives it LOW in
+> `initVariant()` before `setup()`, so it boots to a defined state.
+
+`analogWrite()` is only real PWM on **D3 D5 D6 D9 D10 D11** (confirmed in the `UNOWIFIR4`
+variant's `initVariant()`) — on any other pin the core silently degrades it to a 0/1 digital
+write, so the four EN pins must come from that set. All four above qualify. D0/D1 (Serial1)
+and **A4/A5** are untouched; A4/A5 carry the UPS_3S INA219 at 0x41. D10–D13 are the SPI bus
+and are used as plain GPIO here, which costs nothing since nothing on this board needs SPI.
 
 ## Bring-up — in this order
 
-The `inv` flags and `VX_SIGN` in the sketch are a **starting guess, not a measurement**.
+Steps 1 and 2 are **done and measured** (2026-08-06); step 3 is still open. The order below
+cannot be shortcut, and is kept because it is how the current values were derived.
 
-1. Set `driveMode = MODE_WHEELTEST`, reflash. Each wheel spins for 2 s in turn while the
-   matrix lights the quadrant the code *believes* that wheel sits in. If the lit corner
-   and the spinning wheel disagree, **reorder `MOTORS[]`** — never compensate in the mix.
-   Driving forward is invariant to any permutation of the four wheels and rotating only
-   distinguishes left from right, so a front/rear swap within one side passes both of
-   those tests and corrupts nothing but strafe. This is the only test that catches it.
-2. Back in `MODE_DRIVE`, push the stick forward. Flip `inv` on every wheel that turns
-   backwards. The rover now tracks straight. (Four wheels turning the same *absolute*
-   direction is the wrong state — it drives one side backwards.)
-3. Only now check strafe. If it slides the wrong way, flip **`VX_SIGN`** — not `inv`,
-   which is by then calibrated for forward motion and would break driving straight.
+1. ✅ **Wheel identification.** `#define START_IN_WHEELTEST 1`, reflash. Each wheel spins
+   for 1.4 s in turn with a 0.6 s still gap, while the matrix lights the quadrant the code
+   *believes* that wheel sits in. If the lit corner and the spinning wheel disagree,
+   **reorder `MOTORS[]`** — never compensate in the mix.
+   *Result: every slot drove the corner the matrix lit, so `MOTORS[]` order is confirmed.*
+
+   This is the only test that catches a front/rear swap within one side: driving forward is
+   invariant to any permutation of the four wheels, and rotating only distinguishes left
+   from right, so such a swap passes both of those tests and corrupts nothing but strafe.
+
+2. ✅ **Direction.** With the wheel test still running, flip `inv` on every wheel that turns
+   backwards. *Result: only front-right needed flipping, giving `{true, true, false,
+   false}` — the whole left side inverted and the whole right side not, which is what a
+   chassis with mirror-mounted sides gives when every motor is conventionally terminated.
+   The symmetry is itself evidence the result is right.* Four wheels turning the same
+   **absolute** direction is the wrong state — it drives one side backwards.
+
+3. ⬜ **Strafe.** Only now check it. If the rover slides the wrong way, flip **`VX_SIGN`** —
+   not `inv`, which is by now calibrated for forward motion and would break straight
+   tracking.
 
 ## Controls
 
