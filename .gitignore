@@ -1,0 +1,10 @@
+# Arduino build output
+build/
+
+# Wi-Fi credentials — arduino_secrets.h.example is the tracked template
+arduino_secrets.h
+
+# Session memory / tooling scratch
+.remember/
+ruvector.db
+**/ruvector.db
