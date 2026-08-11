@@ -109,6 +109,36 @@ no forward motion can be commanded from anywhere — a second stick that could s
 forward would make it mean "locked, unless you use the other stick", which is not a lock.
 It does not survive a mode change, and a click always clears it in one step.
 
+## Mecanum motion reference — including the four rotations
+
+![The eight basic mecanum motions](images/mecanum-motions.png)
+
+![Mecanum wheel principle](images/mecanum-wheel-principle.png)
+
+The charts above are the standard reference; the roller hatching shows the mounting the
+mix assumes — **viewed from above, the top rollers form an X pointing at the chassis
+centre** (see `VX_SIGN` in the sketch). Every motion shown falls out of the same four
+mix lines with no special cases, including the diagonals (they appear whenever
+`vy = ±vx`, one wheel pair cancelling to zero on its own).
+
+Note the bottom row: there are **four distinct rotation types**, not one, and they differ
+in what they need from the operator:
+
+| rotation | axes | how to command it |
+|---|---|---|
+| spin in place | `w` alone | primary stick sideways |
+| around a bend (arc) | `vy + w` | primary stick diagonal |
+| pivot on the **rear** axle midpoint | `vx = +w`, `vy = 0` | needs strafe **and** rotate at once — two sticks |
+| pivot on the **front** axle midpoint | `vx = −w`, `vy = 0` | needs strafe **and** rotate at once — two sticks |
+
+The axle pivots work because blending equal strafe and rotate cancels one wheel pair
+exactly: with `vx = +w` the rear pair's `−sx + w` / `+sx − w` terms zero out, so only the
+front wheels drive (opposed) and the rover pivots about the stationary rear axle; `vx = −w`
+is the mirror case. A one-stick remote can never reach them — no single mode carries both
+`vx` and `w` — which is a concrete payoff of the two-stick holonomy above: primary stick
+sideways (rotate) plus aux stick sideways (strafe) in the matching direction pivots the
+rover on an axle instead of its centre; opposite directions pivot on the other axle.
+
 ## Wiring
 
 Two L298N modules, one per axle, so the high-current leads stay short.
