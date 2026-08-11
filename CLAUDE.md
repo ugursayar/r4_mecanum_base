@@ -208,11 +208,16 @@ drove the corner the matrix lit in every slot (order confirmed), and only front-
 backwards, giving `inv = {true, true, false, false}`: the whole left side inverted, the
 whole right side not. That symmetry is the expected result for a chassis whose sides are
 mirrored by mounting with every motor conventionally terminated, so it corroborates itself.
-**`VX_SIGN = -1`, also measured**: strafe slid the wrong way at `+1`, so this chassis's
-rollers are mirrored against the standard X layout — the same as quali_base's, which
-carries the same negation. The bring-up order is what makes that attributable to the
-rollers rather than to wiring: the corner mapping was already confirmed and forward already
-tracked straight, and rotation needed no flip. Calibration is complete.
+**`VX_SIGN = +1`, re-measured 2026-08-11** after the mecanum wheels were found mounted in
+the wrong corners and remounted correctly: strafe then came out inverted, so the sign
+flipped from the `-1` measured on 2026-08-06. That earlier value — and its "this chassis's
+rollers are mirrored against the standard X layout" story — was an artifact of the
+mis-mounted wheels, not a chassis fact. Only strafe flipped when the wheels moved, which is
+the signature of a roller-pattern change: forward is invariant to roller orientation and
+rotation needed no change either time. **quali_base's `-1` is now suspect for the same
+reason** — same chassis, same wheels — and should be re-verified on hardware before being
+trusted. Note that remounting wheels between corners changes ONLY `VX_SIGN`: `MOTORS[]`
+order and `inv` describe the motors and wiring, which did not move.
 
 The pin map is byte-for-byte quali_base's, deliberately, so the same chassis and harness
 move between the Uno Q and the R4 with nothing re-terminated. The one table divergence is
@@ -229,8 +234,7 @@ Array order is `{FL, RL, FR, RR}` and must stay that way — `drive4()` indexes 
 positionally and the mix assigns a different expression to each corner. Reordering silently
 turns a strafe into a spin.
 
-**The shipped `inv` flags and `VX_SIGN` are a starting guess, not a measurement** — this
-repo has never been on hardware. Bring-up order matters and cannot be shortcut (see README):
+Bring-up order matters and cannot be shortcut (see README):
 wheel-test the index→corner map *first*, because driving forward is invariant to any
 permutation of the four wheels and rotating only distinguishes left from right, so a
 front/rear swap within one side passes both of those tests and corrupts nothing but strafe.

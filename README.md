@@ -8,7 +8,9 @@ The drive logic is a port of [`quali_base`](../quali_base) — the same chassis 
 an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
 
 > **Calibrated and verified on hardware 2026-08-06.** `MOTORS[]` order, the `inv` flags and
-> `VX_SIGN` are all **measured** — see **Bring-up**. Confirmed on the rover with a real
+> `VX_SIGN` are all **measured** — see **Bring-up** (`VX_SIGN` re-measured **2026-08-11**
+> after the wheels were remounted in their correct corners). Confirmed on the rover with a
+> real
 > Nesso N1: pairing and sustained link over **both BLE and Wi-Fi UDP**, **switching between
 > the two transports live** with no power cycle, all four motors, forward / reverse / rotate
 > / strafe, mode changes, the LED matrix indicators, and the battery gauge on pack power.
@@ -152,10 +154,14 @@ cannot be shortcut, and is kept because it is how the current values were derive
    The symmetry is itself evidence the result is right.* Four wheels turning the same
    **absolute** direction is the wrong state — it drives one side backwards.
 
-3. ✅ **Strafe.** Only now check it. *Result: the rover slid the wrong way, so `VX_SIGN`
-   is **`-1`** — this chassis's rollers are mirrored against the standard X layout, the
-   same as quali_base's.* Flip that **one constant**, never `inv`, which is by now
-   calibrated for forward motion and would break straight tracking.
+3. ✅ **Strafe.** Only now check it. *Result (re-measured 2026-08-11): `VX_SIGN` is
+   **`+1`**. It was first measured at `-1` on 2026-08-06, but that run had the mecanum
+   wheels mounted in the wrong corners — remounting them correctly inverted the strafe and
+   nothing else, so the sign flipped with them. With the wheels right, this chassis is the
+   standard X roller layout.* Flip that **one constant**, never `inv`, which is by now
+   calibrated for forward motion and would break straight tracking. Remounting wheels
+   between corners changes only this constant — `MOTORS[]` and `inv` describe the motors
+   and wiring, which don't move with the wheels.
 
    The order is what makes this attributable: by step 3 the corner mapping was confirmed
    and forward already tracked straight, so no wiring fault could still be in play — only

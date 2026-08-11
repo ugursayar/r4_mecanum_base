@@ -195,29 +195,30 @@ Motor MOTORS[4] = {
   { 4,  7,  6, false},  // rear-right   L298N#1(rear) -B: IN3=D4,  IN4=D7,  ENB=D6  (~)
 };
 
-// Sign of the strafe axis as the CHASSIS sees it — MEASURED on this build 2026-08-06.
+// Sign of the strafe axis as the CHASSIS sees it — RE-MEASURED 2026-08-11 after the
+// wheels were remounted in their correct corners.
 //
 // The mecanum mix below assumes the standard X roller layout (viewed from above, the top
-// rollers form an X: FL/RR at +45 deg, FR/RL at -45 deg). This chassis's rollers are
-// MIRRORED against that, so what the mix calls "strafe right" slid it LEFT until this went
-// negative. quali_base is mirrored the same way and carries the same negation, which is
-// unsurprising — it is the same chassis design.
+// rollers form an X: FL/RR at +45 deg, FR/RL at -45 deg). With the wheels mounted
+// correctly this chassis IS that layout, so the sign is +1.
 //
-// That this is a ROLLER fact and not a wiring one is what the bring-up order proves: the
-// wheel test had already confirmed the corner mapping, and forward already tracked straight
-// with `inv` calibrated, so nothing about which motor is which could still be wrong. Only
-// the diagonal the rollers push along was left. Rotation needed no flip either, which is
-// the other half of the proof — a wiring fault would have shown up there too.
+// History: this was -1, measured 2026-08-06 — but that measurement was taken with the
+// mecanum wheels mounted in the WRONG corners, which mirrors the roller pattern the
+// chassis presents. Remounting them flipped the strafe direction, and only the strafe:
+// forward is invariant to roller orientation and rotation needed no change, which is
+// exactly the signature of a roller-pattern flip rather than a wiring fault. The
+// "this chassis's rollers are mirrored by design" story the old comment told was an
+// artifact of the mis-mounted wheels — and quali_base carries the same negation on the
+// same chassis, so ITS -1 is suspect for the same reason and should be re-checked on
+// hardware before being trusted again.
 //
-// One negation covers the diagonals as well, since the mirroring is global. It lives HERE
-// and nowhere else, which is what lets everything upstream — the matrix dot, dirName(), the
-// serial log — read `vx` as "+ = the rover slides right". Until this constant existed the
-// equivalent negation sat in the MODE_STRAFE case on quali_base, which drove the motors
-// correctly but mirrored the display against the real motion.
+// One sign covers the diagonals as well, since the roller pattern is global. It lives
+// HERE and nowhere else, which is what lets everything upstream — the matrix dot,
+// dirName(), the serial log — read `vx` as "+ = the rover slides right".
 //
 // Do NOT "fix" a strafe fault with the `inv` flags: they are calibrated for forward motion
 // and would break straight tracking.
-const int VX_SIGN = -1;
+const int VX_SIGN = +1;
 
 // ── Drive tuning (PWM units, 0..255) ──────────────────────────────────────────
 const int MIN_PWM   = 60;   // below this the motors stall; commands snap up to this
