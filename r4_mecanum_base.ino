@@ -254,8 +254,10 @@ const uint32_t DRIVE_TICK_MS = 60;
 // The N1's drive stick gives two axes and pre-mixes them into tank values, so a
 // one-stick remote cannot reach all three DOFs at once — hence modes, cycled by the
 // stick click, each re-using the same two axes for a different pair of DOFs. A N1 with a
-// second stick fitted lifts exactly that limit (see SECONDARY STICK below), which is why
-// the second stick needs no gesture and no mode of its own.
+// second stick fitted lifts exactly that limit (see SECONDARY STICK below), so modes are
+// ONE-STICK machinery: with two sticks the mapping is fixed, the click cycle is disabled
+// and the mode is pinned to DRIVE — the click then only serves the throttle-lock escape
+// (and the WHEELTEST exit).
 //
 // MODE_WHEELTEST spins one wheel at a time in MOTORS[] index order and lights the matrix
 // quadrant the code BELIEVES that index sits in — step 1 of bring-up above.
@@ -337,31 +339,34 @@ const NessoButton MODE_BUTTON = NESSO_BTN_STICK;   // click / hold — see above
 // stick", which is not a lock.
 bool throttleLock = false;
 
-// ── Secondary stick: the OTHER drive mode, at the same time ───────────────────
+// ── Secondary stick: full holonomy with a FIXED mapping — no modes involved ───
 // The N1 can carry up to three joysticks (drive seesaw + Mini JoyC + Unit JoyStick2).
 // NessoLink carries the extras as aux stick 1 (auxX/auxY — present in v1 frames already,
-// flagged by `hasAux`) and aux stick 2 (v2 frames only). This binds AUX STICK 1.
+// flagged by `hasAux`) and aux stick 2 (v2 frames only, `hasAux2`). This binds AUX
+// STICK 1; aux stick 2 is decoded by the library but deliberately left unbound for now.
 //
-// It drives whichever of the two everyday modes is NOT selected, so the two sticks
-// together always cover all three degrees of freedom at once. That is the whole point:
-// modes exist only because two axes cannot express three DOFs, and a second stick lifts
-// exactly that limit without adding anything to the mode machinery.
+// With a second stick present the mapping is FIXED and does not depend on the mode:
 //
-//   selected mode      primary stick (seesaw)     secondary stick (aux 1)
-//   DRIVE  (vy, w)     throttle + rotate          throttle + strafe  -> adds vx
-//   STRAFE (vy, vx)    throttle + strafe          throttle + rotate  -> adds w
-//   WHEELTEST          ignored                    ignored
+//   primary stick (seesaw)     throttle + rotate  -> vy, w
+//   secondary stick (aux 1)    throttle + strafe  -> vy, vx
+//
+// All three DOFs are live at once, so every motion in the README's reference chart —
+// diagonals, strafe, and all four rotation types including the axle pivots — is
+// available BY DEFAULT with no mode change. Modes exist only because ONE stick cannot
+// express three DOFs; with two sticks there is nothing left to select, so DRIVE/STRAFE
+// are one-stick machinery and a two-stick handheld pins the mode to DRIVE (see
+// updateMode()). This port originally had the aux stick drive "whichever mode is not
+// selected" instead — the same motions were reachable, but the sticks swapped roles
+// when the mode changed, which bought nothing over a fixed mapping and made what a
+// stick does depend on a dot on the matrix. Removed 2026-08-11.
 //
 // The THROTTLE LOCK composes with this: it zeroes vy after both sticks are summed, so
-// DRIVE + lock gives rotate on the primary and strafe on the secondary — two live axes,
-// no forward creep — and STRAFE + lock gives the same pair from the other side.
+// lock + two sticks gives rotate on the primary and strafe on the secondary — two live
+// axes, no forward creep.
 //
-// The complement is DERIVED from driveMode rather than being selectable in its own
-// right, so there is still exactly one mode to think about and no new gesture to learn:
-// the mode dots already say what the second stick does. NESSO_BTN_STICK2 (the aux
-// stick's own click) is deliberately left unbound — a second button that also changed
-// mode would make "which stick did I just click?" part of the answer, and the gesture
-// set on the drive stick is already at its limit.
+// NESSO_BTN_STICK2 (the aux stick's own click) is deliberately left unbound — a second
+// button that also changed state would make "which stick did I just click?" part of the
+// answer, and the gesture set on the drive stick is already at its limit.
 //
 // The two sticks' contributions SUM and are then clamped, so the shared throttle axis
 // adds where they agree and cancels where they fight. Cancelling is the honest result of
@@ -394,10 +399,6 @@ bool throttleLock = false;
 // transmitter was fixed. Same rule as VX_SIGN in the mix — a correction belongs where the
 // fact it corrects lives. If an axis is wrong, fix the transmitter.
 
-// The mode the secondary stick drives — always the other everyday mode. WHEELTEST is off
-// the click cycle and has no opposite of its own, so it takes STRAFE; it ignores both
-// sticks anyway.
-uint8_t auxModeFor(uint8_t m) { return (m == MODE_STRAFE) ? MODE_DRIVE : MODE_STRAFE; }
 
 // ── Link state ────────────────────────────────────────────────────────────────
 // (enum LinkState is declared with the link config at the top — see the note there.)
@@ -1112,6 +1113,16 @@ void updateMode(bool linkFresh, uint32_t now) {
   // A gesture is only a gesture if we watched both of its edges.
   if (!linkFresh) { lastDown = false; longFired = false; return; }
 
+  // A two-stick handheld has nothing to select — its mapping is fixed (see the
+  // secondary-stick block) — so DRIVE/STRAFE are one-stick machinery and the mode is
+  // pinned to DRIVE while aux is present. The mode may have been left in STRAFE by a
+  // one-stick session, and a mode dot that changes nothing would lie. WHEELTEST is not
+  // pinned away: it is a bench diagnostic entered by reflash and must survive pairing.
+  if (remoteHasAux && driveMode == MODE_STRAFE) {
+    driveMode = MODE_DRIVE;
+    Serial.println("[mode] DRIVE (two-stick handheld — mode cycle disabled)");
+  }
+
   bool down = (remoteBtns & (uint16_t)(1u << MODE_BUTTON)) != 0;
 
   if (down && !lastDown) {                                        // ── press
@@ -1142,6 +1153,7 @@ void updateMode(bool linkFresh, uint32_t now) {
     // just arrived in, and the whole point of the click is that it always simplifies.
     if (throttleLock)                       throttleLock = false;
     else if (driveMode >= MODE_CYCLE_COUNT) driveMode = MODE_DRIVE;
+    else if (remoteHasAux)                  { /* two sticks: nothing to cycle to */ }
     else                                    driveMode = (driveMode + 1) % MODE_CYCLE_COUNT;
     Serial.print("[mode] ");
     Serial.print(driveMode == MODE_DRIVE ? "DRIVE" : driveMode == MODE_STRAFE ? "STRAFE"
@@ -1171,26 +1183,25 @@ void driveTick(bool linkFresh, uint32_t now) {
     // for mecanum — otherwise the two mixers fight and a strafe comes out as a turn.
     int thr  = axisDead((remoteL + remoteR) / 2);
     int turn = axisDead((remoteL - remoteR) / 2);
-    switch (driveMode) {
-      // vx keeps the meaning declared above — +vx = the rover slides RIGHT — in every
-      // mode. The chassis's roller orientation is compensated for in the mix via VX_SIGN,
-      // NOT here: the matrix dot and dirName() both read vx raw, so a negation at this
-      // point would mirror the display against the actual motion.
-      case MODE_STRAFE: vy = thr; vx = turn; w = 0;    break;   // drive + slide sideways
-      default:          vy = thr; vx = 0;    w = turn; break;   // MODE_DRIVE
-    }
-    // SECONDARY STICK — drives the mode that is NOT selected, so the two sticks together
-    // span all three DOFs (see auxModeFor() and the block above it). The axes are taken
-    // exactly as the protocol defines them (+X = right, +Y = up, -255..255): no sign flip,
-    // no swap, no rescale. See the axis-convention note above for why none of that belongs
-    // on this side. clampAxis() on the raw input is the malformed-frame guard.
+    // vx keeps the meaning declared above — +vx = the rover slides RIGHT — everywhere.
+    // The chassis's roller orientation is compensated for in the mix via VX_SIGN, NOT
+    // here: the matrix dot and dirName() both read vx raw, so a negation at this point
+    // would mirror the display against the actual motion.
     if (remoteHasAux) {
+      // TWO STICKS — the mapping is FIXED and mode-independent (see the secondary-stick
+      // block): primary = throttle + rotate, aux = throttle + strafe. All three DOFs
+      // live at once; the throttle axis is shared and sums. The aux axes are taken
+      // exactly as the protocol defines them (+X = right, +Y = up, -255..255): no sign
+      // flip, no swap, no rescale — see the axis-convention note above for why none of
+      // that belongs on this side. clampAxis() on the raw input is the malformed-frame
+      // guard.
       int ax = axisDead(clampAxis(remoteAuxX));
       int ay = axisDead(clampAxis(remoteAuxY));
-      switch (auxModeFor(driveMode)) {
-        case MODE_DRIVE: vy += ay; w  += ax; break;   // selected mode is STRAFE
-        default:         vy += ay; vx += ax; break;   // selected mode is DRIVE / WHEELTEST
-      }
+      vy = thr + ay; vx = ax; w = turn;
+    } else switch (driveMode) {
+      // ONE STICK — the mode says which pair of DOFs its two axes span.
+      case MODE_STRAFE: vy = thr; vx = turn; w = 0;    break;   // drive + slide sideways
+      default:          vy = thr; vx = 0;    w = turn; break;   // MODE_DRIVE
     }
     // THROTTLE LOCK, applied here and nowhere else: after every source of throttle has
     // been summed, so it means "no forward motion can be commanded" rather than "the drive

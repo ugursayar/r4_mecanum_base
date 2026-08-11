@@ -58,22 +58,30 @@ What changed, and why:
 Mecanum is 3-DOF (forward, strafe, rotate) but the N1's drive stick has two axes, which
 it pre-mixes into tank `leftMotor`/`rightMotor` — so a one-stick remote cannot reach all
 three at once, which is the only reason modes exist. When the N1 reports a **second
-stick** (frame flag `hasAux`) it drives whichever everyday mode is **not** selected, so
-the two sticks together span all three DOFs at once:
+stick** (frame flag `hasAux`) the mapping is **fixed** and modes stop mattering:
 
-| selected mode | primary stick (seesaw) | secondary stick (aux 1) |
-|---|---|---|
-| `DRIVE` (vy, w) | throttle + rotate | throttle + strafe → adds `vx` |
-| `STRAFE` (vy, vx) | throttle + strafe | throttle + rotate → adds `w` |
-| `WHEELTEST` | ignored | ignored |
+| stick | axes |
+|---|---|
+| primary (seesaw) | throttle + rotate → `vy`, `w` |
+| secondary (aux 1) | throttle + strafe → `vy`, `vx` |
 
-The complement is *derived* from the mode rather than being selectable, so there is still
-one mode to think about and no new gesture: the mode dots already say what the second
-stick does. `NESSO_BTN_STICK2` is deliberately unbound. The two sticks' contributions
-**sum then clamp**, so the shared throttle axis adds where they agree and cancels where
-they fight. A one-stick remote is unaffected — `hasAux` is honoured rather than inferred
-from a non-zero reading, since the encoder zeroes the aux fields and `0/0` cannot
-distinguish "no stick" from "stick centred".
+All three DOFs are live at once, so every motion in the reference chart below —
+diagonals, strafe, and all four rotation types including the axle pivots — is available
+**by default**, no mode change needed. Modes are one-stick machinery: with two sticks
+there is nothing left to select, so the click cycle is disabled and the mode pins to
+`DRIVE` (the click still clears the throttle lock, and still exits `WHEELTEST`).
+`NESSO_BTN_STICK2` is deliberately unbound. The two sticks' contributions **sum then
+clamp**, so the shared throttle axis adds where they agree and cancels where they fight.
+A one-stick remote is unaffected — `hasAux` is honoured rather than inferred from a
+non-zero reading, since the encoder zeroes the aux fields and `0/0` cannot distinguish
+"no stick" from "stick centred". (The N1 can carry a **third** stick — NessoLink v2's
+`aux2X`/`aux2Y`/`hasAux2` — which is decoded by the library but deliberately unbound
+here for now.)
+
+> Until 2026-08-11 the aux stick instead drove whichever mode was *not* selected. The
+> same motions were reachable, but the sticks swapped roles when the mode changed, which
+> bought nothing over a fixed mapping and made what a stick does depend on a dot on the
+> matrix.
 
 **Axis convention is the protocol's, not a local guess.** NessoLink **1.1.2** states it
 normatively: every axis is −255..255, `auxX` is screen-horizontal with **+ = right**,
@@ -172,7 +180,7 @@ cannot be shortcut, and is kept because it is how the current values were derive
 
 | gesture on the stick button | effect |
 |---|---|
-| single click | clear the throttle lock if set — that is *all* it does; otherwise cycle `DRIVE` ↔ `STRAFE`, or from an off-cycle mode back to `DRIVE` |
+| single click | clear the throttle lock if set — that is *all* it does; otherwise cycle `DRIVE` ↔ `STRAFE` (one-stick handhelds only — with two sticks there is nothing to cycle), or from an off-cycle mode back to `DRIVE` |
 | long press (800 ms) | set the **throttle lock** on the current mode (idempotent, not a toggle) |
 | reflash only | `MODE_WHEELTEST` |
 

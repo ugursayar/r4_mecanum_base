@@ -22,9 +22,11 @@ The Arduino preprocessor injects auto-generated prototypes for every function in
 signature must therefore be declared *above that point*.
 
 `enum LinkState` is declared up in the link-config block, far from the state machine that
-uses it, purely for this reason: `auxModeFor()` (defined with the secondary-stick block) is
+uses it, purely for this reason: `searchWindowMs()` (with the link-state variables) is
 the first function in the file, so prototypes for `gotoState(LinkState)` and
-`isWifiDomain(LinkState)` land above it. **Moving the enum back down next to its state
+`isWifiDomain(LinkState)` land above it. (It used to be `auxModeFor()`; deleting a
+function can MOVE the injection point, which is part of why both build paths get verified
+after structural edits.) **Moving the enum back down next to its state
 machine breaks the build** with a confusing `'LinkState' was not declared in this scope` at
 the *transport* functions, hundreds of lines from the real cause. The same trap fires for
 any new type used in a signature — declare it above the first function definition, or move
@@ -249,13 +251,21 @@ since it is by then calibrated for forward motion.
   never existed. It zeroes `vy` **after both sticks are summed**, so it means "no forward
   motion can be commanded" rather than "the drive stick's throttle is ignored" — otherwise
   the second stick could still drive forward while "locked".
-- **Secondary stick drives the mode that is NOT selected** (`auxModeFor()`), so the two
-  sticks span all three DOFs at once. Derived from `driveMode` rather than selectable, so
-  the mode dots still say what the second stick does. `NESSO_BTN_STICK2` is deliberately
-  unbound. Contributions **sum then clamp**. `hasAux` is honoured rather than inferred from
-  a non-zero reading — the encoder zeroes the aux fields, so `0/0` cannot distinguish "no
-  stick" from "stick centred". Note the N1 **may already set `hasAux`** if a Mini JoyC is
-  fitted, so this can change how an existing handheld drives.
+- **Secondary stick: FIXED mapping, modes disabled (reworked 2026-08-11).** With `hasAux`
+  set, primary = throttle + rotate and aux = throttle + strafe, **regardless of mode** —
+  all three DOFs live at once, every motion (including the axle pivots) available by
+  default. Modes are one-stick machinery: `updateMode()` pins the mode to `DRIVE` while
+  aux is present and the click cycle is a no-op (the click still clears the throttle lock
+  and still exits `WHEELTEST`, which is not pinned away — a bench diagnostic must survive
+  pairing). The original port had the aux stick drive the *complement* mode
+  (`auxModeFor()`, now deleted): same reachable motions, but the sticks swapped roles with
+  the mode, which bought nothing over a fixed mapping. `NESSO_BTN_STICK2` is deliberately
+  unbound, and so is **aux stick 2** (`aux2X`/`aux2Y`/`hasAux2`, NessoLink v2 frames) —
+  decoded by the library, dropped here, pending a decision on what a third stick should
+  mean when all three DOFs are already covered. Contributions **sum then clamp**. `hasAux`
+  is honoured rather than inferred from a non-zero reading — the encoder zeroes the aux
+  fields, so `0/0` cannot distinguish "no stick" from "stick centred". The N1 in use
+  **does set `hasAux`** (a Mini JoyC is fitted, confirmed on the bench).
 
 ### What was deliberately NOT ported from quali_base
 
