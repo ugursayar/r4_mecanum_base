@@ -26,7 +26,7 @@ it explains a decision.
 >
 > **TCP is disabled** (`ENABLE_TCP 0`) — see **Transports** for the measured reason.
 
-Engineering notes and traps are in [CLAUDE.md](CLAUDE.md).
+Engineering notes and traps are in [docs/ENGINEERING.md](docs/ENGINEERING.md).
 
 ```
  Nesso N1  ──[ BLE | Wi-Fi UDP:8889 | Wi-Fi TCP:8890 ]──▶  Uno R4 WiFi  ──▶  2x L298N ──▶ 4 mecanum wheels
