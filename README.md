@@ -120,6 +120,8 @@ It does not survive a mode change, and a click always clears it in one step.
 
 ![Mecanum wheel principle](images/mecanum-wheel-principle.png)
 
+*Motion chart adapted from [Lesics](https://www.youtube.com/@Lesics).*
+
 The charts above are the standard reference; the roller hatching shows the mounting the
 mix assumes — **viewed from above, the top rollers form an X pointing at the chassis
 centre** (see `VX_SIGN` in the sketch). Every motion shown falls out of the same four
