@@ -11,3 +11,6 @@ ruvector.db
 
 # Claude Code notes (local only)
 CLAUDE.md
+
+# Machine-specific IntelliSense config (absolute toolchain paths)
+.vscode/c_cpp_properties.json
