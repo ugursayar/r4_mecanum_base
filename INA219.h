@@ -1,14 +1,14 @@
 // INA219 driver for the Waveshare UPS Module 3S V2 (3S 18650 pack monitor).
 //
-// Ported from the Robi project's Python driver (UPS_Module_3S_V2/INA219.py) — same
-// registers, same 16V/5A calibration, same maths, so readings match Robi's 1:1.
+// Ported from the Python driver used on my RobiOneKenobi robot (UPS_Module_3S_V2/INA219.py)
+// — same registers, same 16V/5A calibration, same maths, so readings match it 1:1.
 //
-// VENDORED from quali_base (`sketch/INA219.h`), unchanged except this note. The driver
+// Written for the Uno Q build of this chassis, unchanged except this note. The driver
 // itself is board-agnostic — it only ever talks to a `TwoWire` — so the copy is verbatim.
 //
 // On the Uno R4 WiFi the module's SDA/SCL land on **A4/A5**, which is plain `Wire`. Those
 // two pins are kept clear of the motor pin map for exactly this reason; see the MOTORS[]
-// note in r4_mecanum_base.ino before reassigning them. (On quali the same sensor sits on
+// note in r4_mecanum_base.ino before reassigning them. (On the Uno Q the same sensor sits on
 // the Uno Q's D20/D21, also plain `Wire`.)
 //
 // Address 0x41 (ADDR pulled high on the module).

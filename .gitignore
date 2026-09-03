@@ -8,3 +8,6 @@ arduino_secrets.h
 .remember/
 ruvector.db
 **/ruvector.db
+
+# Claude Code notes (local only)
+CLAUDE.md

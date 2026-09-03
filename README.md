@@ -1,11 +1,16 @@
 # r4_mecanum_base — Nesso-driven mecanum rover on an Arduino Uno R4 WiFi
 
-A 4-wheel **mecanum** rover driven from a [Nesso N1](../Nesso_base) handheld over
-[NessoLink](https://github.com/ugursayar/NessoLink) `RemoteFrame`s, accepting **both
-Wi-Fi (UDP + TCP) and Bluetooth LE** and auto-pairing with whichever remote speaks first.
+![r4_mecanum_base rover](images/20260903_115003.jpg)
 
-The drive logic is a port of [`quali_base`](../quali_base) — the same chassis running on
-an Arduino Uno Q — onto a bare R4 with no companion Linux MPU.
+A 4-wheel **mecanum** rover on an Arduino Uno R4 WiFi, driven from an Arduino Nesso N1
+handheld running [Nesso_base](https://github.com/ugursayar/Nesso_base) over
+[NessoLink](https://github.com/ugursayar/NessoLink) `RemoteFrame`s. The sketch accepts
+**both Wi-Fi (UDP + TCP) and Bluetooth LE** and auto-pairs with whichever remote speaks
+first — no companion Linux MPU, the R4 owns the radio and the drive loop.
+
+The drive logic was first developed on an **Arduino Uno Q** version of the same chassis
+(not published); this repo is the port to a bare R4, and the docs keep the comparison where
+it explains a decision.
 
 > **Calibrated and verified on hardware 2026-08-06.** `MOTORS[]` order, the `inv` flags and
 > `VX_SIGN` are all **measured** — see **Bring-up** (`VX_SIGN` re-measured **2026-08-11**
@@ -28,23 +33,23 @@ Engineering notes and traps are in [CLAUDE.md](CLAUDE.md).
                                                                           └─▶  12x8 LED matrix + Serial
 ```
 
-## What came across from quali_base, and what didn't
+## What carried over from the Uno Q build, and what didn't
 
-Everything that is *drive logic* is carried over with its behaviour intact:
+Everything that is *drive logic* came across with its behaviour intact:
 
 - the axis dead-zone / stall-compensation split placed on **opposite sides** of the
   mecanum mix (snapping to `MIN_PWM` before mixing leaks a phantom strafe into a pure
   forward command),
 - the per-wheel mecanum mixer and the proportional down-scale on overflow (clamping
   wheels independently distorts the commanded direction),
-- the slew limiter, the `REMOTE_DEADBAND = 25` that fixed quali_base's "sometimes it
+- the slew limiter, the `REMOTE_DEADBAND = 25` that fixed the earlier build's "sometimes it
   won't stop" bug, and the stale-link stop,
 - the click / long-press mode gestures, the **throttle lock**, the **secondary stick**
   and `MODE_WHEELTEST`.
 
 What changed, and why:
 
-| | quali_base (Uno Q) | here (Uno R4 WiFi) |
+| | Uno Q build | here (Uno R4 WiFi) |
 |---|---|---|
 | **Transport** | Router Bridge from a Linux MPU that owned the radio | the sketch owns the link: Wi-Fi UDP/TCP + BLE, alternating search, sticky pairing |
 | **Vision / `MODE_AUTO`** | camera object-chase on the MPU, gated by a host ARM toggle | **removed** — no camera, no host |
@@ -91,7 +96,7 @@ this end reads right/up and does nothing else — no sign flip, no swap, no resc
 deliberately **no `AUX_X_SIGN`/`AUX_Y_SIGN` knob**. If an axis is wrong, fix the
 transmitter: a receiver cannot know how a handheld's modules are mounted, so compensating
 here would leave every other NessoLink receiver still wrong and would invert this one the
-moment the transmitter was fixed. (That contract exists because quali_base guessed first
+moment the transmitter was fixed. (That contract exists because the Uno Q build guessed first
 and got both the transposition and the ±515 scale wrong.)
 
 Note the N1 **may already be setting `hasAux`** if a Mini JoyC is fitted — v1 frames have
@@ -101,7 +106,7 @@ always had an aux slot — so this can change how an existing handheld drives.
 
 A long press sets the **throttle lock**: the forward/back axis is forced to zero, leaving
 the mode's other axis live. It is orthogonal to the mode rather than being one — hold in
-`DRIVE` and you can only rotate (this *is* quali_base's old `MODE_ROTATE`, bit for bit);
+`DRIVE` and you can only rotate (this *is* the Uno Q build's old `MODE_ROTATE`, bit for bit);
 hold in `STRAFE` and you can only slide sideways, which had no way to be expressed before.
 
 The lock applies to the **sum of both sticks**, after they are gathered, so "locked" means
@@ -150,7 +155,7 @@ Two L298N modules, one per axle, so the high-current leads stay short.
 | front-right | #2 (front), **A** | D8  | D11 | **~D9**  |
 | rear-right  | #1 (rear), **B**  | D4  | D7  | **~D6**  |
 
-**This is byte-for-byte quali_base's pin map**, deliberately: the same chassis and motor
+**This is byte-for-byte the Uno Q build's pin map**, deliberately: the same chassis and motor
 harness move between the Uno Q and the R4 with nothing re-terminated, and the two sketches'
 `MOTORS[]` tables read against each other line for line.
 
@@ -257,12 +262,10 @@ set `SEARCH_PREFER_BLE` accordingly, or `ENABLE_BLE 0` for Wi-Fi-only.
 ## Build & flash
 
 ```powershell
-arduino-cli compile --fqbn "arduino:renesas_uno:unor4wifi" `
-  --library "D:/packages/arduino/user/libraries/NessoLink" `
-  --build-path "D:/r4_mecanum_base/build" .
+# NessoLink installed via Library Manager (or arduino-cli lib install NessoLink)
+arduino-cli compile --fqbn "arduino:renesas_uno:unor4wifi" --build-path build .
 
-arduino-cli upload --fqbn "arduino:renesas_uno:unor4wifi" --port COM5 `
-  --build-path "D:/r4_mecanum_base/build" .
+arduino-cli upload  --fqbn "arduino:renesas_uno:unor4wifi" --port COM5 --build-path build .
 ```
 
 Footprint: **39% flash / 35% RAM** with BLE, **27% / 29%** Wi-Fi-only.
@@ -319,7 +322,7 @@ can never trip the display while a real decline still shows within ~30 s.
 
 **It takes no action.** It never cuts the motors and never shuts anything down, so the
 pack's own BMS is the only automatic protection — a flat pack under load will be dragged to
-BMS cutoff if the operator ignores the panel. This matches quali_base, which deliberately
+BMS cutoff if the operator ignores the panel. This matches the Uno Q build, which deliberately
 made the pack indicator-only.
 
 Its failsafe points the **opposite way to the link's**, on purpose: an absent or failed

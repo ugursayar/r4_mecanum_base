@@ -1,28 +1,28 @@
 /*
  * r4_mecanum_base — Arduino Uno R4 WiFi mecanum rover driven by a Nesso N1 handheld.
  * ===========================================================================
- * The drive logic is a port of quali_base (D:/quali_base/sketch/sketch.ino), which
+ * The drive logic is a port of an earlier Arduino Uno Q build of the same chassis (not published), which
  * runs the same 4-wheel mecanum chassis on an Arduino Uno Q. What changed and why:
  *
- *   * TRANSPORT. quali_base received NessoLink frames over the Router Bridge from a
+ *   * TRANSPORT. The Uno Q build received NessoLink frames over the Router Bridge from a
  *     Linux MPU that owned the radio; there is no MPU here, so this sketch owns the
  *     link itself — Wi-Fi (UDP + TCP) and Bluetooth LE, auto-pairing with whichever
  *     remote speaks first. The dual-link state machine is taken from
- *     D:/examples/Nesso_R4_Receiver.
- *   * NO VISION. quali_base's MODE_AUTO chased objects detected by a camera on the
+ *     the NessoLink `Nesso_R4_Receiver` example.
+ *   * NO VISION. The Uno Q build's MODE_AUTO chased objects detected by a camera on the
  *     MPU, gated by a host-side ARM toggle. Neither exists on a bare R4, so MODE_AUTO,
  *     the `vision`/`arm` streams and the arm-expiry failsafe are all gone. With nothing
  *     left to bind to the double-click gesture, mode selection loses its double-click
  *     window too — and with it the ~500 ms commit lag every mode change used to pay.
- *     The secondary stick and the throttle lock are ported in full (quali_base
+ *     The secondary stick and the throttle lock are ported in full (the Uno Q build
  *     2026-08-06): a second stick drives whichever everyday mode is NOT selected, so the
  *     two sticks span all three DOFs at once, and a long press locks the throttle axis
  *     instead of selecting a MODE_ROTATE that no longer exists.
  *   * BATTERY. The UPS_3S INA219 pack monitor IS ported (on A4/A5 here, D20/D21 there)
- *     and is INDICATOR-ONLY exactly as on quali_base: it never cuts the motors and never
+ *     and is INDICATOR-ONLY exactly as on the Uno Q build: it never cuts the motors and never
  *     shuts anything down. The pack's BMS remains the only automatic protection.
  *   * MATRIX. 12x8 here vs the Uno Q's 13x8, both read in PORTRAIT — px() applies the
- *     same 90 deg CW rotation, so an indicator ported from quali_base keeps its geometry
+ *     same 90 deg CW rotation, so an indicator ported from the Uno Q build keeps its geometry
  *     and only the height constant changes.
  *
  * Everything that IS drive logic is carried over unchanged in behaviour: the axis
@@ -98,7 +98,7 @@ const uint32_t STALL_WARN_MS = 300;
 // noise nobody reads.
 uint32_t stallRefMs = 0;
 // Paired: no valid frame for this long -> treat the link as dead and stop the rover.
-// This is quali_base's REMOTE_TIMEOUT (600 ms) rounded to the receiver's own 700 ms
+// This is the Uno Q build's REMOTE_TIMEOUT (600 ms) rounded to the receiver's own 700 ms
 // failsafe so the motors and the "no signal" display agree on when the link is gone.
 const uint32_t FAILSAFE_MS     = 700;
 const uint32_t UNPAIR_MS       = 3000;  // link lost this long -> re-enter search
@@ -115,7 +115,7 @@ ArduinoLEDMatrix matrix;
 // One driver module per axle so the high-current leads stay short; the logic runs are
 // the long ones, which is harmless at this PWM rate.
 //
-// PIN MAP IS IDENTICAL TO quali_base's. That is deliberate and worth keeping: the same
+// PIN MAP IS IDENTICAL TO the Uno Q build's. That is deliberate and worth keeping: the same
 // chassis and the same motor harness can be moved between the Uno Q and this board without
 // re-terminating anything, and the two sketches' MOTORS[] tables can be read against each
 // other line for line. Verified pin-by-pin against the R4 core before adopting:
@@ -129,7 +129,7 @@ ArduinoLEDMatrix matrix;
 //     costs nothing.
 //
 // ONE R4-SPECIFIC DIFFERENCE, and the only place this map behaves unlike it does on the
-// Uno Q: **D13 IS the built-in LED here** (PIN_LED = 13, port P102), whereas quali_base's
+// Uno Q: **D13 IS the built-in LED here** (PIN_LED = 13, port P102), whereas the Uno Q build's
 // note records that D13 is *not* the onboard LED on an Uno Q. D13 is front-left's second
 // direction pin, so the onboard LED now mirrors front-left's direction bit. That is
 // cosmetic — the L298N input is high-impedance and the LED sits in parallel — but do not
@@ -161,7 +161,7 @@ ArduinoLEDMatrix matrix;
 //   3. Only then check strafe, and if it goes the wrong way flip VX_SIGN — not `inv`,
 //      which is by now calibrated for forward motion and would break driving straight.
 struct Motor { uint8_t in1, in2, en; bool inv; };
-// AS ACTUALLY BUILT (wiring confirmed 2026-08-06), and byte-for-byte quali_base's table.
+// AS ACTUALLY BUILT (wiring confirmed 2026-08-06), and byte-for-byte the Uno Q build's table.
 // **L298N#1 = REAR pair, L298N#2 = FRONT pair** — each module sits next to the motors it
 // drives, so the high-current leads stay short and only the logic runs are long, which is
 // harmless at this PWM rate.
@@ -181,8 +181,8 @@ struct Motor { uint8_t in1, in2, en; bool inv; };
 // straight; four wheels turning the same absolute direction is the wrong state, not the
 // right one.
 //
-// This is the one place the table DIVERGES from quali_base, which needs front-right
-// inverted too. That is not a difference in the chassis or the mix: quali_base's
+// This is the one place the table DIVERGES from the Uno Q build, which needs front-right
+// inverted too. That is not a difference in the chassis or the mix: the Uno Q build's
 // front-right leads are terminated the other way round on OUT3/OUT4 relative to its other
 // three, and that cable was re-terminated on this build before the R4 went in. `inv`
 // belongs to the MOTOR, not the slot — it encodes how these leads are screwed into these
@@ -208,7 +208,7 @@ Motor MOTORS[4] = {
 // forward is invariant to roller orientation and rotation needed no change, which is
 // exactly the signature of a roller-pattern flip rather than a wiring fault. The
 // "this chassis's rollers are mirrored by design" story the old comment told was an
-// artifact of the mis-mounted wheels — and quali_base carries the same negation on the
+// artifact of the mis-mounted wheels — and the Uno Q build carries the same negation on the
 // same chassis, so ITS -1 is suspect for the same reason and should be re-checked on
 // hardware before being trusted again.
 //
@@ -225,7 +225,7 @@ const int MIN_PWM   = 60;   // below this the motors stall; commands snap up to 
 const int MAX_PWM   = 255;  // full speed available
 // Belt-and-braces as of NessoLink 1.1.2, which makes "a released stick reads exactly 0"
 // part of the contract — the N1 dead-zones its sticks before transmitting, confirmed on
-// quali_base's wire log 2026-08-06 (the L/R rest offset that read -12 for months now
+// the Uno Q build's wire log 2026-08-06 (the L/R rest offset that read -12 for months now
 // reads 0). Older handheld builds settled at +-11..14, and at a smaller deadband those
 // counted as a command: the stall snap lifts them to MIN_PWM, and the shaping emits 0 or
 // >=MIN_PWM and never anything between, so the rover kept creeping at ~65 PWM after the
@@ -236,7 +236,7 @@ const int MAX_PWM   = 255;  // full speed available
 // build, not normal jitter.
 const int REMOTE_DEADBAND = 25;   // applies to BOTH sticks — aux is the same -255..255 scale
 const int SLEW_STEP       = 40;   // max PWM change per drive tick (smooth accel/brake ramp)
-// quali_base ran its whole loop at this period. Here the same period is a *timer*: the
+// The Uno Q build ran its whole loop at this period. Here the same period is a *timer*: the
 // transport has to be polled continuously (there is no Bridge thread feeding frames in
 // the background any more), and a blocking delay() long enough to matter drops UDP
 // datagrams and starves the BLE stack. Driving on a tick keeps SLEW_STEP meaning what
@@ -279,7 +279,7 @@ enum DriveMode : uint8_t { MODE_DRIVE = 0, MODE_STRAFE, MODE_WHEELTEST, MODE_COU
 // since a click from an off-cycle mode falls back to it.
 //
 // MODE_ROTATE USED TO BE A MODE HERE and was replaced by the throttle lock, following
-// quali_base 2026-08-06. It was `vy = 0, w = turn` — which is DRIVE with the throttle
+// the Uno Q build 2026-08-06. It was `vy = 0, w = turn` — which is DRIVE with the throttle
 // forced to zero, i.e. one specific case of the lock. Generalising it costs nothing and
 // gains the missing half: STRAFE with the throttle locked (slide sideways without
 // creeping forward) had no way to be expressed before. The gesture, the idempotency and
@@ -292,7 +292,7 @@ enum DriveMode : uint8_t { MODE_DRIVE = 0, MODE_STRAFE, MODE_WHEELTEST, MODE_COU
 // landing on it mid-drive means the rover moves off with the stick centred; a bench
 // diagnostic you need after rewiring should cost a reflash, not a slip of the thumb.
 //
-// quali_base has a third gesture, the double click, which selects its vision mode. There
+// The Uno Q build has a third gesture, the double click, which selects its vision mode. There
 // is no vision here and nothing else worth a gesture, so the double click is gone — and
 // with it the reason a single click had to sit in a 500 ms window before committing,
 // waiting to find out whether a partner click was coming. Clicks commit on the release.
@@ -386,7 +386,7 @@ bool throttleLock = false;
 // module is physically mounted, so this end just reads right/up and does nothing else:
 // no sign flip, no swap, no rescale, and deliberately no AUX_X_SIGN / AUX_Y_SIGN knob.
 //
-// That contract was written down *because* quali_base got it wrong first. Before 1.1.2
+// That contract was written down *because* the Uno Q build got it wrong first. Before 1.1.2
 // the header specified no aux range and no axis convention, so both had to be guessed —
 // and both guesses were wrong: the N1 was transmitting the axes TRANSPOSED (pushing the
 // stick up strafed the rover right), because its aux path skipped the orientation flags
@@ -513,7 +513,7 @@ void stopMotors() {
 // applies the rotation. Logical (0,0) is the TOP-LEFT as seen by the viewer, +x is right
 // and +y is DOWN. Nothing above fbRender() should touch fb[][] directly.
 //
-// This is the same arrangement quali_base uses (its panel is 13x8, so its logical frame
+// This is the same arrangement the Uno Q build uses (its panel is 13x8, so its logical frame
 // is 8x13); keeping the two in the same orientation means an indicator ported from there
 // keeps its geometry and only its height constant changes.
 //
@@ -528,7 +528,7 @@ uint8_t lastFB[PANEL_ROWS][PANEL_COLS];
 bool    haveLast = false;
 
 // Which way the panel is turned relative to the logical frame. 1 = the 90 deg CW mapping
-// quali_base uses; 0 = the other way round. This is a PHYSICAL fact about how the board is
+// the Uno Q build uses; 0 = the other way round. This is a PHYSICAL fact about how the board is
 // mounted on the rover, so it lives in exactly one place — like VX_SIGN. If the whole
 // display comes out upside down (status row along the wrong edge, forward reading as
 // backward), flip THIS, never the individual draw routines: they are all in logical
@@ -660,14 +660,14 @@ void drawNoSignal() {
 }
 
 // ── Battery: UPS_3S (3x 18650 in series) via INA219 @ 0x41 on Wire (A4/A5) ────
-// Ported from quali_base 2026-08-06, thresholds and state machine unchanged.
+// Ported from the Uno Q build 2026-08-06, thresholds and state machine unchanged.
 //
 // Thresholds are on the *pack* voltage (bus + shunt drop), smoothed by an EMA: the motors
 // draw from the same pack, so a stall sags the rail well below the true state of charge.
 // tau ~= 20 s at 1 Hz rides out any sag short of an actually flat battery, so a brief sag
 // can never trip the display while a real decline still shows within ~30 s.
 //
-// INDICATOR-ONLY, exactly as on quali_base: this does NOT cut the motors and does not shut
+// INDICATOR-ONLY, exactly as on the Uno Q build: this does NOT cut the motors and does not shut
 // anything down. The pack's own BMS is the only automatic protection. The consequence,
 // stated plainly because it is a real trade: a flat pack under motor load will be dragged
 // to BMS cutoff if the operator ignores the panel.
@@ -686,7 +686,7 @@ const float V_RELEASE = 10.5f;   // critical latch clears only once clearly rech
 const float WARN_HYST = 0.15f;   // warn releases at V_WARN + this
 
 const uint32_t BATT_SAMPLE_MS = 1000;
-const uint32_t BATT_REPORT_MS = 5000;    // serial cadence; quali_base pushed this to its MPU
+const uint32_t BATT_REPORT_MS = 5000;    // serial cadence; the Uno Q build pushed this to its MPU
 const uint32_t BATT_RETRY_MS  = 5000;    // re-probe cadence while the module is absent
 const uint32_t EMA_RESEED_MS  = 30000;   // gap after which the carried EMA is stale
 const float    EMA_ALPHA      = 0.05f;   // tau ~= 20 s at 1 Hz
@@ -1213,7 +1213,7 @@ void driveTick(bool linkFresh, uint32_t now) {
     vy = clampAxis(vy); vx = clampAxis(vx); w = clampAxis(w);
   }
   // else: no fresh frame — every axis stays 0 and the slew below ramps the rover down.
-  // This is the failsafe, and it is the only one: unlike quali_base there is no vision
+  // This is the failsafe, and it is the only one: unlike the Uno Q build there is no vision
   // path that a silent remote can hand control to.
 
   // Mecanum mix, per wheel. Sign errors here are normal on first bring-up and show up as
@@ -1345,7 +1345,7 @@ void setup() {
   stopMotors();
 
   matrix.begin();
-  // Boot self-test, as quali_base does: light every pixel briefly. Worth the 400 ms
+  // Boot self-test, as the Uno Q build does: light every pixel briefly. Worth the 400 ms
   // because every other screen here is sparse — a dead row or a stuck pixel would
   // otherwise read as a mode dot, a link lamp, a battery bar or a stick position that
   // isn't there.
